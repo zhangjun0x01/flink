@@ -36,12 +36,12 @@ import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import javax.annotation.Nullable;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -324,7 +324,6 @@ public class BucketsTest {
 				new DefaultBucketFactoryImpl<>(),
 				new RowWiseBucketWriter<>(FileSystem.get(path.toUri()).createRecoverableWriter(), new SimpleStringEncoder<>()),
 				DefaultRollingPolicy.builder().build(),
-				null,
 				2,
 				OutputFileConfig.builder().build()
 		);
@@ -412,6 +411,48 @@ public class BucketsTest {
 		Assert.assertEquals(expectedEvents, bucketLifeCycleListener.getEvents());
 	}
 
+	@Test
+	public void testBucketLifeCycleListenerOnRestoring() throws Exception {
+		File outDir = TEMP_FOLDER.newFolder();
+		Path path = new Path(outDir.toURI());
+		OnProcessingTimePolicy<String, String> rollOnProcessingTimeCountingPolicy =
+			new OnProcessingTimePolicy<>(2L);
+		RecordBucketLifeCycleListener bucketLifeCycleListener = new RecordBucketLifeCycleListener();
+		Buckets<String, String> buckets = createBuckets(
+			path,
+			rollOnProcessingTimeCountingPolicy,
+			bucketLifeCycleListener,
+			0,
+			OutputFileConfig.builder().build());
+		ListState<byte[]> bucketStateContainer = new MockListState<>();
+		ListState<Long> partCounterContainer = new MockListState<>();
+
+		buckets.onElement("test1", new TestUtils.MockSinkContext(null, 1L, 2L));
+		buckets.onElement("test2", new TestUtils.MockSinkContext(null, 1L, 3L));
+
+		// Will close the part file writer of the bucket "test1". Now bucket "test1" have only
+		// one pending file while bucket "test2" has an on-writing in-progress file.
+		buckets.onProcessingTime(4);
+		buckets.snapshotState(0, bucketStateContainer, partCounterContainer);
+
+		// On restoring the bucket "test1" will commit its pending file and become inactive.
+		buckets = restoreBuckets(
+			path,
+			rollOnProcessingTimeCountingPolicy,
+			bucketLifeCycleListener,
+			0,
+			bucketStateContainer,
+			partCounterContainer,
+			OutputFileConfig.builder().build());
+
+		Assert.assertEquals(new HashSet<>(Collections.singletonList("test2")), buckets.getActiveBuckets().keySet());
+		List<Tuple2<RecordBucketLifeCycleListener.EventType, String>> expectedEvents = Arrays.asList(
+			new Tuple2<>(RecordBucketLifeCycleListener.EventType.CREATED, "test1"),
+			new Tuple2<>(RecordBucketLifeCycleListener.EventType.CREATED, "test2"),
+			new Tuple2<>(RecordBucketLifeCycleListener.EventType.INACTIVE, "test1"));
+		Assert.assertEquals(expectedEvents, bucketLifeCycleListener.getEvents());
+	}
+
 	private static class RecordBucketLifeCycleListener implements BucketLifeCycleListener<String, String> {
 		public enum EventType {
 			CREATED,
@@ -452,19 +493,23 @@ public class BucketsTest {
 	private static Buckets<String, String> createBuckets(
 			final Path basePath,
 			final RollingPolicy<String, String> rollingPolicy,
-			@Nullable final BucketLifeCycleListener<String, String> bucketLifeCycleListener,
+			final BucketLifeCycleListener<String, String> bucketLifeCycleListener,
 			final int subtaskIdx,
 			final OutputFileConfig outputFileConfig) throws IOException {
-		return new Buckets<>(
+		Buckets<String, String> buckets = new Buckets<>(
 				basePath,
 				new TestUtils.StringIdentityBucketAssigner(),
 				new DefaultBucketFactoryImpl<>(),
 				new RowWiseBucketWriter<>(FileSystem.get(basePath.toUri()).createRecoverableWriter(), new SimpleStringEncoder<>()),
 				rollingPolicy,
-				bucketLifeCycleListener,
 				subtaskIdx,
-				outputFileConfig
-		);
+				outputFileConfig);
+
+		if (bucketLifeCycleListener != null) {
+			buckets.setBucketLifeCycleListener(bucketLifeCycleListener);
+		}
+
+		return buckets;
 	}
 
 	private static Buckets<String, String> restoreBuckets(
@@ -476,6 +521,7 @@ public class BucketsTest {
 		return restoreBuckets(
 				basePath,
 				rollingPolicy,
+				null,
 				subtaskIdx,
 				bucketState,
 				partCounterState,
@@ -485,6 +531,7 @@ public class BucketsTest {
 	private static Buckets<String, String> restoreBuckets(
 			final Path basePath,
 			final RollingPolicy<String, String> rollingPolicy,
+			final BucketLifeCycleListener<String, String> bucketLifeCycleListener,
 			final int subtaskIdx,
 			final ListState<byte[]> bucketState,
 			final ListState<Long> partCounterState,
@@ -492,7 +539,7 @@ public class BucketsTest {
 		final Buckets<String, String> restoredBuckets = createBuckets(
 			basePath,
 			rollingPolicy,
-			null,
+			bucketLifeCycleListener,
 			subtaskIdx,
 			outputFileConfig);
 		restoredBuckets.initializeState(bucketState, partCounterState);

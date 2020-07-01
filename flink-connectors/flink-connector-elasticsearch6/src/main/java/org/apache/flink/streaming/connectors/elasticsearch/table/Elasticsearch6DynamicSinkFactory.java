@@ -24,7 +24,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.connector.format.SinkFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
@@ -84,7 +84,7 @@ public class Elasticsearch6DynamicSinkFactory implements DynamicTableSinkFactory
 		ElasticsearchValidationUtils.validatePrimaryKey(tableSchema);
 		final FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
 
-		final SinkFormat<SerializationSchema<RowData>> format = helper.discoverSinkFormat(
+		final EncodingFormat<SerializationSchema<RowData>> format = helper.discoverEncodingFormat(
 			SerializationFormatFactory.class,
 			FORMAT_OPTION);
 
@@ -109,17 +109,20 @@ public class Elasticsearch6DynamicSinkFactory implements DynamicTableSinkFactory
 		validate(
 			config.getIndex().length() >= 1,
 			() -> String.format("'%s' must not be empty", INDEX_OPTION.key()));
+		int maxActions = config.getBulkFlushMaxActions();
 		validate(
-			config.getBulkFlushMaxActions().map(maxActions -> maxActions >= 1).orElse(true),
+			maxActions == -1 || maxActions >= 1,
 			() -> String.format(
 				"'%s' must be at least 1 character. Got: %s",
 				BULK_FLUSH_MAX_ACTIONS_OPTION.key(),
-				config.getBulkFlushMaxActions().get())
+				maxActions)
 		);
+		long maxSize = config.getBulkFlushMaxByteSize();
+		long mb1 = 1024 * 1024;
 		validate(
-			config.getBulkFlushMaxSize().map(maxSize -> maxSize >= 1024 * 1024).orElse(true),
+			maxSize == -1 || (maxSize >= mb1 && maxSize % mb1 == 0),
 			() -> String.format(
-				"'%s' must be at least 1mb character. Got: %s",
+				"'%s' must be in MB granularity. Got: %s",
 				BULK_FLASH_MAX_SIZE_OPTION.key(),
 				originalConfiguration.get(BULK_FLASH_MAX_SIZE_OPTION).toHumanReadableString())
 		);

@@ -747,6 +747,8 @@ public abstract class SchedulerBase implements SchedulerNG {
 					"default via key '" + CheckpointingOptions.SAVEPOINT_DIRECTORY.key() + "'.");
 		}
 
+		log.info("Triggering {}savepoint for job {}.", cancelJob ? "cancel-with-" : "", jobGraph.getJobID());
+
 		if (cancelJob) {
 			checkpointCoordinator.stopCheckpointScheduler();
 		}
@@ -857,6 +859,8 @@ public abstract class SchedulerBase implements SchedulerNG {
 					"default via key '" + CheckpointingOptions.SAVEPOINT_DIRECTORY.key() + "'."));
 		}
 
+		log.info("Triggering stop-with-savepoint for job {}.", jobGraph.getJobID());
+
 		// we stop the checkpoint coordinator so that we are guaranteed
 		// to have only the data of the synchronous savepoint committed.
 		// in case of failure, and if the job restarts, the coordinator
@@ -962,7 +966,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 			throw new FlinkException("Coordinator of operator " + operator + " does not exist");
 		}
 
-		final OperatorCoordinator coordinator = coordinatorHolder.getCoordinator();
+		final OperatorCoordinator coordinator = coordinatorHolder.coordinator();
 		if (coordinator instanceof CoordinationRequestHandler) {
 			return ((CoordinationRequestHandler) coordinator).handleCoordinationRequest(request);
 		} else {
@@ -970,7 +974,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		}
 	}
 
-	private void initializeOperatorCoordinators(Executor mainThreadExecutor) {
+	private void initializeOperatorCoordinators(ComponentMainThreadExecutor mainThreadExecutor) {
 		for (OperatorCoordinatorHolder coordinatorHolder : getAllCoordinators()) {
 			coordinatorHolder.lazyInitialize(this, mainThreadExecutor);
 		}
@@ -1002,7 +1006,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		Map<OperatorID, OperatorCoordinatorHolder> coordinatorMap = new HashMap<>();
 		for (ExecutionJobVertex vertex : executionGraph.getAllVertices().values()) {
 			for (OperatorCoordinatorHolder holder : vertex.getOperatorCoordinators()) {
-				coordinatorMap.put(holder.getOperatorId(), holder);
+				coordinatorMap.put(holder.operatorId(), holder);
 			}
 		}
 		return coordinatorMap;

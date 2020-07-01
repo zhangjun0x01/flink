@@ -99,11 +99,8 @@ class TableEnvironmentTest {
     TestTableSourceSinks.createCsvTemporarySinkTable(
       tEnv, new TableSchema(Array("first"), Array(STRING)), "MySink", -1)
 
-    val table1 = tEnv.sqlQuery("select first from MyTable")
-    tEnv.insertInto(table1, "MySink")
-
     val expected = TableTestUtil.readFromResource("/explain/testStreamTableEnvironmentExplain.out")
-    val actual = tEnv.explain(false)
+    val actual = tEnv.explainSql("insert into MySink select first from MyTable")
     assertEquals(TableTestUtil.replaceStageId(expected), TableTestUtil.replaceStageId(actual))
   }
 
@@ -294,11 +291,11 @@ class TableEnvironmentTest {
       .functionExists(ObjectPath.fromString("default_database.f1")))
 
     val tableResult4 = tableEnv.executeSql(
-      s"CREATE TEMPORARY SYSTEM FUNCTION default_database.f2 AS '$funcName'")
+      s"CREATE TEMPORARY SYSTEM FUNCTION f2 AS '$funcName'")
     assertEquals(ResultKind.SUCCESS, tableResult4.getResultKind)
     assertTrue(tableEnv.listUserDefinedFunctions().contains("f2"))
 
-    val tableResult5 = tableEnv.executeSql("DROP TEMPORARY SYSTEM FUNCTION default_database.f2")
+    val tableResult5 = tableEnv.executeSql("DROP TEMPORARY SYSTEM FUNCTION f2")
     assertEquals(ResultKind.SUCCESS, tableResult5.getResultKind)
     assertFalse(tableEnv.listUserDefinedFunctions().contains("f2"))
   }
@@ -337,6 +334,9 @@ class TableEnvironmentTest {
     tableEnv.registerCatalog("my_catalog", new GenericInMemoryCatalog("my_catalog"))
     val tableResult = tableEnv.executeSql("SHOW CATALOGS")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult.getResultKind)
+    assertEquals(
+      TableSchema.builder().field("catalog name", DataTypes.STRING()).build(),
+      tableResult.getTableSchema)
     checkData(
       util.Arrays.asList(Row.of("default_catalog"), Row.of("my_catalog")).iterator(),
       tableResult.collect())
@@ -348,6 +348,9 @@ class TableEnvironmentTest {
     assertEquals(ResultKind.SUCCESS, tableResult1.getResultKind)
     val tableResult2 = tableEnv.executeSql("SHOW DATABASES")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult2.getResultKind)
+    assertEquals(
+      TableSchema.builder().field("database name", DataTypes.STRING()).build(),
+      tableResult2.getTableSchema)
     checkData(
       util.Arrays.asList(Row.of("default_database"), Row.of("db1")).iterator(),
       tableResult2.collect())
@@ -371,6 +374,9 @@ class TableEnvironmentTest {
 
     val tableResult2 = tableEnv.executeSql("SHOW TABLES")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult2.getResultKind)
+    assertEquals(
+      TableSchema.builder().field("table name", DataTypes.STRING()).build(),
+      tableResult2.getTableSchema)
     checkData(
       util.Arrays.asList(Row.of("tbl1")).iterator(),
       tableResult2.collect())
@@ -380,6 +386,9 @@ class TableEnvironmentTest {
   def testExecuteSqlWithShowFunctions(): Unit = {
     val tableResult = tableEnv.executeSql("SHOW FUNCTIONS")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult.getResultKind)
+    assertEquals(
+      TableSchema.builder().field("function name", DataTypes.STRING()).build(),
+      tableResult.getTableSchema)
     checkData(
       tableEnv.listFunctions().map(Row.of(_)).toList.asJava.iterator(),
       tableResult.collect())
@@ -780,6 +789,9 @@ class TableEnvironmentTest {
 
     val tableResult3 = tableEnv.executeSql("SHOW VIEWS")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult3.getResultKind)
+    assertEquals(
+      TableSchema.builder().field("view name", DataTypes.STRING()).build(),
+      tableResult3.getTableSchema)
     checkData(
       util.Arrays.asList(Row.of("view1")).iterator(),
       tableResult3.collect())
@@ -1060,7 +1072,7 @@ class TableEnvironmentTest {
         Row.of("f25", "STRING", Boolean.box(false), null, null, null),
         Row.of("f26", "ROW<`f0` INT NOT NULL, `f1` INT>", Boolean.box(false),
           "PRI(f24, f26)", null, null),
-        Row.of("ts", "TIMESTAMP(3)", Boolean.box(true), null, "TO_TIMESTAMP(`f25`)",
+        Row.of("ts", "TIMESTAMP(3) *ROWTIME*", Boolean.box(true), null, "TO_TIMESTAMP(`f25`)",
           "`ts` - INTERVAL '1' SECOND")
       ).iterator(),
       tableResult1.collect())

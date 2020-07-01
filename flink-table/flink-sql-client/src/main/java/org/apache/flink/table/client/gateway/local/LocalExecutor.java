@@ -41,11 +41,10 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
+import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.client.SqlClientException;
 import org.apache.flink.table.client.config.Environment;
-import org.apache.flink.table.client.config.entries.TableEntry;
-import org.apache.flink.table.client.config.entries.ViewEntry;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
@@ -56,14 +55,14 @@ import org.apache.flink.table.client.gateway.local.result.ChangelogResult;
 import org.apache.flink.table.client.gateway.local.result.DynamicResult;
 import org.apache.flink.table.client.gateway.local.result.MaterializedResult;
 import org.apache.flink.table.delegation.Parser;
+import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeUtils;
 import org.apache.flink.table.types.utils.DataTypeUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.JarUtils;
 import org.apache.flink.util.StringUtils;
-
-import org.apache.flink.shaded.guava18.com.google.common.collect.ImmutableMap;
 
 import org.apache.commons.cli.Options;
 import org.slf4j.Logger;
@@ -285,7 +284,12 @@ public class LocalExecutor implements Executor {
 	public void setSessionProperty(String sessionId, String key, String value) throws SqlExecutionException {
 		ExecutionContext<?> context = getExecutionContext(sessionId);
 		Environment env = context.getEnvironment();
-		Environment newEnv = Environment.enrich(env, ImmutableMap.of(key, value), ImmutableMap.of());
+		Environment newEnv;
+		try {
+			newEnv = Environment.enrich(env, Collections.singletonMap(key, value));
+		} catch (Throwable t) {
+			throw new SqlExecutionException("Could not set session property.", t);
+		}
 
 		// Renew the ExecutionContext by new environment.
 		// Book keep all the session states of current ExecutionContext then
@@ -296,47 +300,6 @@ public class LocalExecutor implements Executor {
 				.sessionState(context.getSessionState())
 				.build();
 		this.contextMap.put(sessionId, newContext);
-	}
-
-	@Override
-	public void addView(String sessionId, String name, String query) throws SqlExecutionException {
-		ExecutionContext<?> context = getExecutionContext(sessionId);
-		TableEnvironment tableEnv = context.getTableEnvironment();
-		tableEnv.createTemporaryView(name, tableEnv.sqlQuery(query));
-		// Also attach the view to ExecutionContext#environment.
-		context.getEnvironment().getTables().put(name, ViewEntry.create(name, query));
-	}
-
-	@Override
-	public void removeView(String sessionId, String name) throws SqlExecutionException {
-		// Here we rebuild the ExecutionContext because we want to ensure that all the remaining views can work fine.
-		// Assume the case:
-		//   view1=select 1;
-		//   view2=select * from view1;
-		// If we delete view1 successfully, then query view2 will throw exception because view1 does not exist. we want
-		// all the remaining views are OK, so do the ExecutionContext rebuilding to avoid breaking the view dependency.
-		ExecutionContext<?> context = getExecutionContext(sessionId);
-		Environment env = context.getEnvironment();
-		Environment newEnv = env.clone();
-		if (newEnv.getTables().remove(name) != null) {
-			// Renew the ExecutionContext.
-			this.contextMap.put(
-					sessionId,
-					createExecutionContextBuilder(context.getOriginalSessionContext())
-							.env(newEnv).build());
-		}
-	}
-
-	@Override
-	public Map<String, ViewEntry> listViews(String sessionId) throws SqlExecutionException {
-		Map<String, ViewEntry> views = new HashMap<>();
-		Map<String, TableEntry> tables = getExecutionContext(sessionId).getEnvironment().getTables();
-		for (Map.Entry<String, TableEntry> entry : tables.entrySet()) {
-			if (entry.getValue() instanceof ViewEntry) {
-				views.put(entry.getKey(), (ViewEntry) entry.getValue());
-			}
-		}
-		return views;
 	}
 
 	@Override
@@ -460,7 +423,23 @@ public class LocalExecutor implements Executor {
 	public Parser getSqlParser(String sessionId) {
 		final ExecutionContext<?> context = getExecutionContext(sessionId);
 		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return ((TableEnvironmentInternal) tableEnv).getParser();
+		final Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
+		return new Parser() {
+			@Override
+			public List<Operation> parse(String statement) {
+				return context.wrapClassLoader(() -> parser.parse(statement));
+			}
+
+			@Override
+			public UnresolvedIdentifier parseIdentifier(String identifier) {
+				return context.wrapClassLoader(() -> parser.parseIdentifier(identifier));
+			}
+
+			@Override
+			public ResolvedExpression parseSqlExpression(String sqlExpression, TableSchema inputSchema) {
+				return context.wrapClassLoader(() -> parser.parseSqlExpression(sqlExpression, inputSchema));
+			}
+		};
 	}
 
 	@Override
@@ -608,13 +587,17 @@ public class LocalExecutor implements Executor {
 		// create execution
 		final ProgramDeployer deployer = new ProgramDeployer(configuration, jobName, pipeline);
 
-		// blocking deployment
-		try {
-			JobClient jobClient = deployer.deploy().get();
-			return ProgramTargetDescriptor.of(jobClient.getJobID());
-		} catch (Exception e) {
-			throw new RuntimeException("Error running SQL job.", e);
-		}
+		// wrap in classloader because CodeGenOperatorFactory#getStreamOperatorClass
+		// requires to access UDF in deployer.deploy().
+		return context.wrapClassLoader(() -> {
+			try {
+				// blocking deployment
+				JobClient jobClient = deployer.deploy().get();
+				return ProgramTargetDescriptor.of(jobClient.getJobID());
+			} catch (Exception e) {
+				throw new RuntimeException("Error running SQL job.", e);
+			}
+		});
 	}
 
 	private <C> ResultDescriptor executeQueryInternal(String sessionId, ExecutionContext<C> context, String query) {
@@ -662,12 +645,16 @@ public class LocalExecutor implements Executor {
 				configuration, jobName, pipeline);
 
 		JobClient jobClient;
-		// blocking deployment
-		try {
-			jobClient = deployer.deploy().get();
-		} catch (Exception e) {
-			throw new SqlExecutionException("Error while submitting job.", e);
-		}
+		// wrap in classloader because CodeGenOperatorFactory#getStreamOperatorClass
+		// requires to access UDF in deployer.deploy().
+		jobClient = context.wrapClassLoader(() -> {
+			try {
+				// blocking deployment
+				return deployer.deploy().get();
+			} catch (Exception e) {
+				throw new SqlExecutionException("Error while submitting job.", e);
+			}
+		});
 
 		String jobId = jobClient.getJobID().toString();
 		// store the result under the JobID

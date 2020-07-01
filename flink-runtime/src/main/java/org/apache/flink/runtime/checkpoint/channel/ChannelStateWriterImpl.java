@@ -56,7 +56,7 @@ import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteReque
 public class ChannelStateWriterImpl implements ChannelStateWriter {
 
 	private static final Logger LOG = LoggerFactory.getLogger(ChannelStateWriterImpl.class);
-	private static final int DEFAULT_MAX_CHECKPOINTS = 5; // currently, only single in-flight checkpoint is supported
+	private static final int DEFAULT_MAX_CHECKPOINTS = 1000; // includes max-concurrent-checkpoints + checkpoints to be aborted (scheduled via mailbox)
 
 	private final String taskName;
 	private final ChannelStateWriteRequestExecutor executor;
@@ -98,15 +98,14 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 
 	@Override
 	public void start(long checkpointId, CheckpointOptions checkpointOptions) {
-		results.keySet().forEach(oldCheckpointId -> abort(oldCheckpointId, new Exception("Starting new checkpoint " + checkpointId)));
 		LOG.debug("{} starting checkpoint {} ({})", taskName, checkpointId, checkpointOptions);
 		ChannelStateWriteResult result = new ChannelStateWriteResult();
 		ChannelStateWriteResult put = results.computeIfAbsent(checkpointId, id -> {
-			Preconditions.checkState(results.size() < maxCheckpoints, "results.size() > maxCheckpoints", results.size(), maxCheckpoints);
+			Preconditions.checkState(results.size() < maxCheckpoints, String.format("%s can't start %d, results.size() > maxCheckpoints: %d > %d", taskName, checkpointId, results.size(), maxCheckpoints));
 			enqueue(new CheckpointStartRequest(checkpointId, result, checkpointOptions.getTargetLocation()), false);
 			return result;
 		});
-		Preconditions.checkArgument(put == result, "result future already present for checkpoint " + checkpointId);
+		Preconditions.checkArgument(put == result, taskName + " result future already present for checkpoint " + checkpointId);
 	}
 
 	@Override
@@ -129,7 +128,7 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 			info,
 			startSeqNum,
 			data == null ? 0 : data.length);
-		enqueue(write(checkpointId, info, checkBufferType(data)), false);
+		enqueue(write(checkpointId, info, data), false);
 	}
 
 	@Override
@@ -145,25 +144,21 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 	}
 
 	@Override
-	public void abort(long checkpointId, Throwable cause) {
+	public void abort(long checkpointId, Throwable cause, boolean cleanup) {
 		LOG.debug("{} aborting, checkpoint {}", taskName, checkpointId);
 		enqueue(ChannelStateWriteRequest.abort(checkpointId, cause), true); // abort already started
 		enqueue(ChannelStateWriteRequest.abort(checkpointId, cause), false); // abort enqueued but not started
-		results.remove(checkpointId);
+		if (cleanup) {
+			results.remove(checkpointId);
+		}
 	}
 
 	@Override
-	public ChannelStateWriteResult getWriteResult(long checkpointId) {
+	public ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId) {
 		LOG.debug("{} requested write result, checkpoint {}", taskName, checkpointId);
-		ChannelStateWriteResult result = results.get(checkpointId);
-		Preconditions.checkArgument(result != null, "channel state write result not found for checkpoint " + checkpointId);
+		ChannelStateWriteResult result = results.remove(checkpointId);
+		Preconditions.checkArgument(result != null, taskName + " channel state write result not found for checkpoint " + checkpointId);
 		return result;
-	}
-
-	@Override
-	public void stop(long checkpointId) {
-		LOG.debug("{} stopping checkpoint {}", taskName, checkpointId);
-		results.remove(checkpointId);
 	}
 
 	public void open() {
@@ -194,27 +189,6 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 			}
 			throw wrapped;
 		}
-	}
-
-	private static Buffer[] checkBufferType(Buffer... data) {
-		if (data == null) {
-			return new Buffer[0];
-		}
-		try {
-			for (Buffer buffer : data) {
-				if (!buffer.isBuffer()) {
-					throw new IllegalArgumentException(buildBufferTypeErrorMessage(buffer));
-				}
-			}
-		} catch (Exception e) {
-			for (Buffer buffer : data) {
-				if (buffer.isBuffer()) {
-					buffer.recycleBuffer();
-				}
-			}
-			throw e;
-		}
-		return data;
 	}
 
 	private static String buildBufferTypeErrorMessage(Buffer buffer) {

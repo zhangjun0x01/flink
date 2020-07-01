@@ -19,6 +19,7 @@
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
@@ -59,6 +60,7 @@ import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
 import org.apache.flink.runtime.state.AbstractStateBackend;
+import org.apache.flink.runtime.state.CheckpointListener;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.DoneFuture;
 import org.apache.flink.runtime.state.KeyGroupRange;
@@ -148,6 +150,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.apache.flink.runtime.checkpoint.StateObjectCollection.singleton;
 import static org.apache.flink.streaming.util.StreamTaskUtil.waitTaskIsRunning;
@@ -969,6 +972,34 @@ public class StreamTaskTest extends TestLogger {
 		assertEquals(true, operator.closed.get());
 	}
 
+	@Test
+	public void testFailToConfirmCheckpointCompleted() throws Exception {
+		testFailToConfirmCheckpointMessage(streamTask -> streamTask.notifyCheckpointCompleteAsync(1L));
+	}
+
+	@Test
+	public void testFailToConfirmCheckpointAborted() throws Exception {
+		testFailToConfirmCheckpointMessage(streamTask -> streamTask.notifyCheckpointAbortAsync(1L));
+	}
+
+	private void testFailToConfirmCheckpointMessage(Consumer<StreamTask<?, ?>> consumer) throws Exception {
+		StreamMap<Integer, Integer> streamMap = new StreamMap<>(new FailOnNotifyCheckpointMapper<>());
+		MultipleInputStreamTaskTestHarnessBuilder<Integer> builder =
+			new MultipleInputStreamTaskTestHarnessBuilder<>(OneInputStreamTask::new, BasicTypeInfo.INT_TYPE_INFO)
+				.addInput(BasicTypeInfo.INT_TYPE_INFO);
+		StreamTaskMailboxTestHarness<Integer> harness = builder
+			.setupOutputForSingletonOperatorChain(streamMap)
+			.build();
+
+		try {
+			consumer.accept(harness.streamTask);
+			harness.streamTask.runMailboxStep();
+			fail();
+		} catch (ExpectedTestException expected) {
+			// expected exception
+		}
+	}
+
 	/**
 	 * Tests that checkpoints are declined if operators are (partially) closed.
 	 *
@@ -1779,6 +1810,11 @@ public class StreamTaskTest extends TestLogger {
 		}
 
 		@Override
+		public Optional<byte[]> asBytesIfInMemory() {
+			return Optional.empty();
+		}
+
+		@Override
 		public StreamStateHandle getDelegateStateHandle() {
 			throw new UnsupportedOperationException("Not implemented.");
 		}
@@ -2010,6 +2046,25 @@ public class StreamTaskTest extends TestLogger {
 
 		@Override
 		public void processElement(StreamRecord<T> element) throws Exception {
+		}
+	}
+
+	private static class FailOnNotifyCheckpointMapper<T> implements MapFunction<T, T>, CheckpointListener {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public T map(T value) throws Exception {
+			return value;
+		}
+
+		@Override
+		public void notifyCheckpointAborted(long checkpointId) {
+			throw new ExpectedTestException();
+		}
+
+		@Override
+		public void notifyCheckpointComplete(long checkpointId) {
+			throw new ExpectedTestException();
 		}
 	}
 }

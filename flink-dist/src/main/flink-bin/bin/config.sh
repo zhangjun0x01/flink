@@ -326,20 +326,20 @@ if [ -z "$HADOOP_CONF_DIR" ]; then
     if [ -n "$HADOOP_HOME" ]; then
         # HADOOP_HOME is set. Check if its a Hadoop 1.x or 2.x HADOOP_HOME path
         if [ -d "$HADOOP_HOME/conf" ]; then
-            # its a Hadoop 1.x
+            # It's Hadoop 1.x
             HADOOP_CONF_DIR="$HADOOP_HOME/conf"
         fi
         if [ -d "$HADOOP_HOME/etc/hadoop" ]; then
-            # Its Hadoop 2.2+
+            # It's Hadoop 2.2+
             HADOOP_CONF_DIR="$HADOOP_HOME/etc/hadoop"
         fi
     fi
 fi
 
-# try and set HADOOP_CONF_DIR to some common default if it's not set
-if [ -z "$HADOOP_CONF_DIR" ]; then
+# if neither HADOOP_CONF_DIR nor HADOOP_CLASSPATH are set, use some common default (if available)
+if [ -z "$HADOOP_CONF_DIR" ] && [ -z "$HADOOP_CLASSPATH" ]; then
     if [ -d "/etc/hadoop/conf" ]; then
-        echo "Setting HADOOP_CONF_DIR=/etc/hadoop/conf because no HADOOP_CONF_DIR was set."
+        echo "Setting HADOOP_CONF_DIR=/etc/hadoop/conf because no HADOOP_CONF_DIR or HADOOP_CLASSPATH was set."
         HADOOP_CONF_DIR="/etc/hadoop/conf"
     fi
 fi
@@ -354,14 +354,14 @@ fi
 # also potentially includes topology information and the taskManager type
 extractHostName() {
     # handle comments: extract first part of string (before first # character)
-    SLAVE=`echo $1 | cut -d'#' -f 1`
+    WORKER=`echo $1 | cut -d'#' -f 1`
 
     # Extract the hostname from the network hierarchy
-    if [[ "$SLAVE" =~ ^.*/([0-9a-zA-Z.-]+)$ ]]; then
-            SLAVE=${BASH_REMATCH[1]}
+    if [[ "$WORKER" =~ ^.*/([0-9a-zA-Z.-]+)$ ]]; then
+            WORKER=${BASH_REMATCH[1]}
     fi
 
-    echo $SLAVE
+    echo $WORKER
 }
 
 # Auxilliary functions for log file rotation
@@ -422,52 +422,52 @@ readMasters() {
     done < "$MASTERS_FILE"
 }
 
-readSlaves() {
-    SLAVES_FILE="${FLINK_CONF_DIR}/slaves"
+readWorkers() {
+    WORKERS_FILE="${FLINK_CONF_DIR}/workers"
 
-    if [[ ! -f "$SLAVES_FILE" ]]; then
-        echo "No slaves file. Please specify slaves in 'conf/slaves'."
+    if [[ ! -f "$WORKERS_FILE" ]]; then
+        echo "No workers file. Please specify workers in 'conf/workers'."
         exit 1
     fi
 
-    SLAVES=()
+    WORKERS=()
 
-    SLAVES_ALL_LOCALHOST=true
+    WORKERS_ALL_LOCALHOST=true
     GOON=true
     while $GOON; do
         read line || GOON=false
         HOST=$( extractHostName $line)
         if [ -n "$HOST" ] ; then
-            SLAVES+=(${HOST})
+            WORKERS+=(${HOST})
             if [ "${HOST}" != "localhost" ] && [ "${HOST}" != "127.0.0.1" ] ; then
-                SLAVES_ALL_LOCALHOST=false
+                WORKERS_ALL_LOCALHOST=false
             fi
         fi
-    done < "$SLAVES_FILE"
+    done < "$WORKERS_FILE"
 }
 
-# starts or stops TMs on all slaves
-# TMSlaves start|stop
-TMSlaves() {
+# starts or stops TMs on all workers
+# TMWorkers start|stop
+TMWorkers() {
     CMD=$1
 
-    readSlaves
+    readWorkers
 
-    if [ ${SLAVES_ALL_LOCALHOST} = true ] ; then
+    if [ ${WORKERS_ALL_LOCALHOST} = true ] ; then
         # all-local setup
-        for slave in ${SLAVES[@]}; do
+        for worker in ${WORKERS[@]}; do
             "${FLINK_BIN_DIR}"/taskmanager.sh "${CMD}"
         done
     else
         # non-local setup
-        # Stop TaskManager instance(s) using pdsh (Parallel Distributed Shell) when available
+        # start/stop TaskManager instance(s) using pdsh (Parallel Distributed Shell) when available
         command -v pdsh >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
-            for slave in ${SLAVES[@]}; do
-                ssh -n $FLINK_SSH_OPTS $slave -- "nohup /bin/bash -l \"${FLINK_BIN_DIR}/taskmanager.sh\" \"${CMD}\" &"
+            for worker in ${WORKERS[@]}; do
+                ssh -n $FLINK_SSH_OPTS $worker -- "nohup /bin/bash -l \"${FLINK_BIN_DIR}/taskmanager.sh\" \"${CMD}\" &"
             done
         else
-            PDSH_SSH_ARGS="" PDSH_SSH_ARGS_APPEND=$FLINK_SSH_OPTS pdsh -w $(IFS=, ; echo "${SLAVES[*]}") \
+            PDSH_SSH_ARGS="" PDSH_SSH_ARGS_APPEND=$FLINK_SSH_OPTS pdsh -w $(IFS=, ; echo "${WORKERS[*]}") \
                 "nohup /bin/bash -l \"${FLINK_BIN_DIR}/taskmanager.sh\" \"${CMD}\""
         fi
     fi
@@ -500,6 +500,11 @@ extractExecutionResults() {
 
     execution_results=$(echo "${output}" | grep ${EXECUTION_PREFIX})
     num_lines=$(echo "${execution_results}" | wc -l)
+    # explicit check for empty result, becuase if execution_results is empty, then wc returns 1
+    if [[ -z ${execution_results} ]]; then
+        echo "[ERROR] The execution result is empty." 1>&2
+        exit 1
+    fi
     if [[ ${num_lines} -ne ${expected_lines} ]]; then
         echo "[ERROR] The execution results has unexpected number of lines, expected: ${expected_lines}, actual: ${num_lines}." 1>&2
         echo "[ERROR] An execution result line is expected following the prefix '${EXECUTION_PREFIX}'" 1>&2
@@ -521,6 +526,12 @@ parseJmJvmArgsAndExportLogs() {
   java_utils_output=$(runBashJavaUtilsCmd GET_JM_RESOURCE_PARAMS "${FLINK_CONF_DIR}" "${FLINK_BIN_DIR}/bash-java-utils.jar:$(findFlinkDistJar)" "$@")
   logging_output=$(extractLoggingOutputs "${java_utils_output}")
   jvm_params=$(extractExecutionResults "${java_utils_output}" 1)
+
+  if [[ $? -ne 0 ]]; then
+    echo "[ERROR] Could not get JVM parameters and dynamic configurations properly."
+    exit 1
+  fi
+
   export JVM_ARGS="${JVM_ARGS} ${jvm_params}"
 
   export FLINK_INHERITED_LOGS="

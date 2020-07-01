@@ -40,8 +40,8 @@ import static org.apache.flink.util.Preconditions.checkState;
  * #onPeriodicEmit()} is called will the deferred updates be combined and forwarded to the
  * underlying output.
  *
- * <p>For registering a new multiplexed output, you must first call {@link #registerNewOutput()}
- * and then call {@link #getImmediateOutput(int)} or {@link #getDeferredOutput(int)} with the output
+ * <p>For registering a new multiplexed output, you must first call {@link #registerNewOutput(String)}
+ * and then call {@link #getImmediateOutput(String)} or {@link #getDeferredOutput(String)} with the output
  * ID you get from that. You can get both an immediate and deferred output for a given output ID,
  * you can also call the getters multiple times.
  *
@@ -57,16 +57,13 @@ public class WatermarkOutputMultiplexer {
 	 */
 	private final WatermarkOutput underlyingOutput;
 
-	/** The id to use for the next registered output. */
-	private int nextOutputId = 0;
-
 	/** The combined watermark over the per-output watermarks. */
 	private long combinedWatermark = Long.MIN_VALUE;
 
 	/**
 	 * Map view, to allow finding them when requesting the {@link WatermarkOutput} for a given id.
 	 */
-	private final Map<Integer, OutputState> watermarkPerOutputId;
+	private final Map<String, OutputState> watermarkPerOutputId;
 
 	/**
 	 * List of all watermark outputs, for efficient access.
@@ -88,13 +85,23 @@ public class WatermarkOutputMultiplexer {
 	 * an output ID that can be used to get a deferred or immediate {@link WatermarkOutput} for that
 	 * output.
 	 */
-	public int registerNewOutput() {
-		int newOutputId = nextOutputId;
-		nextOutputId++;
-		OutputState outputState = new OutputState();
-		watermarkPerOutputId.put(newOutputId, outputState);
+	public void registerNewOutput(String id) {
+		final OutputState outputState = new OutputState();
+
+		final OutputState previouslyRegistered = watermarkPerOutputId.putIfAbsent(id, outputState);
+		checkState(previouslyRegistered == null, "Already contains an output for ID %s", id);
+
 		watermarkOutputs.add(outputState);
-		return newOutputId;
+	}
+
+	public boolean unregisterOutput(String id) {
+		final OutputState output = watermarkPerOutputId.remove(id);
+		if (output != null) {
+			watermarkOutputs.remove(output);
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 	/**
@@ -103,12 +110,9 @@ public class WatermarkOutputMultiplexer {
 	 * <p>>See {@link WatermarkOutputMultiplexer} for a description of immediate and deferred
 	 * outputs.
 	 */
-	public WatermarkOutput getImmediateOutput(int outputId) {
-		Preconditions.checkArgument(
-				watermarkPerOutputId.containsKey(outputId),
-				"no output registered under id " + outputId);
-
-		OutputState outputState = watermarkPerOutputId.get(outputId);
+	public WatermarkOutput getImmediateOutput(String outputId) {
+		final OutputState outputState = watermarkPerOutputId.get(outputId);
+		Preconditions.checkArgument(outputState != null, "no output registered under id %s", outputId);
 		return new ImmediateOutput(outputState);
 	}
 
@@ -118,12 +122,9 @@ public class WatermarkOutputMultiplexer {
 	 * <p>>See {@link WatermarkOutputMultiplexer} for a description of immediate and deferred
 	 * outputs.
 	 */
-	public WatermarkOutput getDeferredOutput(int outputId) {
-		Preconditions.checkArgument(
-				watermarkPerOutputId.containsKey(outputId),
-				"no output registered under id " + outputId);
-
-		OutputState outputState = watermarkPerOutputId.get(outputId);
+	public WatermarkOutput getDeferredOutput(String outputId) {
+		final OutputState outputState = watermarkPerOutputId.get(outputId);
+		Preconditions.checkArgument(outputState != null, "no output registered under id %s", outputId);
 		return new DeferredOutput(outputState);
 	}
 
@@ -171,8 +172,8 @@ public class WatermarkOutputMultiplexer {
 	 * Per-output watermark state.
 	 */
 	private static class OutputState {
-		private volatile long watermark = Long.MIN_VALUE;
-		private volatile boolean idle = false;
+		private long watermark = Long.MIN_VALUE;
+		private boolean idle = false;
 
 		/**
 		 * Returns the current watermark timestamp. This will throw {@link IllegalStateException} if
@@ -191,12 +192,9 @@ public class WatermarkOutputMultiplexer {
 		 */
 		public boolean setWatermark(long watermark) {
 			this.idle = false;
-			if (watermark > this.watermark) {
-				this.watermark = watermark;
-				return true;
-			} else {
-				return false;
-			}
+			final boolean updated = watermark > this.watermark;
+			this.watermark = Math.max(watermark, this.watermark);
+			return updated;
 		}
 
 		public boolean isIdle() {

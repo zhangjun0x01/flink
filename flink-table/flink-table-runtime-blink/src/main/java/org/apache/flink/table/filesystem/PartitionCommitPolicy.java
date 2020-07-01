@@ -21,10 +21,13 @@ package org.apache.flink.table.filesystem;
 import org.apache.flink.annotation.Experimental;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.table.api.ValidationException;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -88,6 +91,17 @@ public interface PartitionCommitPolicy {
 		 * Path of this partition.
 		 */
 		Path partitionPath();
+
+		/**
+		 * Partition spec in the form of a map from partition keys to values.
+		 */
+		default LinkedHashMap<String, String> partitionSpec() {
+			LinkedHashMap<String, String> res = new LinkedHashMap<>();
+			for (int i = 0; i < partitionKeys().size(); i++) {
+				res.put(partitionKeys().get(i), partitionValues().get(i));
+			}
+			return res;
+		}
 	}
 
 	/**
@@ -98,17 +112,17 @@ public interface PartitionCommitPolicy {
 			String policyKind,
 			String customClass,
 			String successFileName,
-			FileSystem fileSystem) {
+			Supplier<FileSystem> fsSupplier) {
 		if (policyKind == null) {
 			return Collections.emptyList();
 		}
 		String[] policyStrings = policyKind.split(",");
 		return Arrays.stream(policyStrings).map(name -> {
-			switch (name) {
+			switch (name.toLowerCase()) {
 				case METASTORE:
 					return new MetastoreCommitPolicy();
 				case SUCCESS_FILE:
-					return new SuccessFileCommitPolicy(successFileName, fileSystem);
+					return new SuccessFileCommitPolicy(successFileName, fsSupplier.get());
 				case CUSTOM:
 					try {
 						return (PartitionCommitPolicy) cl.loadClass(customClass).newInstance();
@@ -120,5 +134,21 @@ public interface PartitionCommitPolicy {
 					throw new UnsupportedOperationException("Unsupported policy: " + name);
 			}
 		}).collect(Collectors.toList());
+	}
+
+	/**
+	 * Validate commit policy.
+	 */
+	static void validatePolicyChain(boolean isEmptyMetastore, String policyKind) {
+		if (policyKind != null) {
+			String[] policyStrings = policyKind.split(",");
+			for (String policy : policyStrings) {
+				if (isEmptyMetastore && METASTORE.equalsIgnoreCase(policy)) {
+					throw new ValidationException("Can not configure a 'metastore' partition commit" +
+							" policy for a file system table. You can only configure 'metastore'" +
+							" partition commit policy for a hive table.");
+				}
+			}
+		}
 	}
 }

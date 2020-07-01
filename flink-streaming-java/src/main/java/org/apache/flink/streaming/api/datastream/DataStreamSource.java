@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.api.datastream;
 
 import org.apache.flink.annotation.Public;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.operators.util.OperatorValidationUtils;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
@@ -37,9 +38,15 @@ public class DataStreamSource<T> extends SingleOutputStreamOperator<T> {
 
 	boolean isParallel;
 
-	public DataStreamSource(StreamExecutionEnvironment environment,
-			TypeInformation<T> outTypeInfo, StreamSource<T, ?> operator,
-			boolean isParallel, String sourceName) {
+	/**
+	 * The constructor used to create legacy sources.
+	 */
+	public DataStreamSource(
+			StreamExecutionEnvironment environment,
+			TypeInformation<T> outTypeInfo,
+			StreamSource<T, ?> operator,
+			boolean isParallel,
+			String sourceName) {
 		super(environment, new LegacySourceTransformation<>(sourceName, operator, outTypeInfo, environment.getParallelism()));
 
 		this.isParallel = isParallel;
@@ -48,20 +55,27 @@ public class DataStreamSource<T> extends SingleOutputStreamOperator<T> {
 		}
 	}
 
+	/**
+	 * Constructor for "deep" sources that manually set up (one or more) custom configured complex operators.
+	 */
 	public DataStreamSource(SingleOutputStreamOperator<T> operator) {
 		super(operator.environment, operator.getTransformation());
 		this.isParallel = true;
 	}
 
+	/**
+	 * Constructor for new Sources (FLIP-27).
+	 */
 	public DataStreamSource(
 			StreamExecutionEnvironment environment,
 			Source<T, ?, ?> source,
+			WatermarkStrategy<T> timestampsAndWatermarks,
 			TypeInformation<T> outTypeInfo,
 			String sourceName) {
 		super(environment,
 				new SourceTransformation<>(
 						sourceName,
-						new SourceOperatorFactory<>(source),
+						new SourceOperatorFactory<>(source, timestampsAndWatermarks),
 						outTypeInfo,
 						environment.getParallelism()));
 	}

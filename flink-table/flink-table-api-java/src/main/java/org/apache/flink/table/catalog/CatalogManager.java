@@ -19,16 +19,23 @@
 package org.apache.flink.table.catalog;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.CatalogNotExistException;
 import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.internal.CatalogTableSchemaResolver;
+import org.apache.flink.table.api.internal.TableEnvironmentImpl;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
+import org.apache.flink.table.delegation.Parser;
+import org.apache.flink.table.delegation.Planner;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
 import org.slf4j.Logger;
@@ -69,6 +76,8 @@ public final class CatalogManager {
 	private String currentCatalogName;
 
 	private String currentDatabaseName;
+
+	private CatalogTableSchemaResolver schemaResolver;
 
 	// The name of the built-in catalog
 	private final String builtInCatalogName;
@@ -144,6 +153,16 @@ public final class CatalogManager {
 				defaultCatalog,
 				new DataTypeFactoryImpl(classLoader, config, executionConfig));
 		}
+	}
+
+	/**
+	 * We do not pass it in the ctor, because we need a {@link Parser} that is constructed in a
+	 * {@link Planner}.  At the same time {@link Planner} needs a {@link CatalogManager} to
+	 * be constructed. Thus we can't get {@link Parser} instance when creating a
+	 * {@link CatalogManager}. See {@link TableEnvironmentImpl#create}.
+	 */
+	public void setCatalogTableSchemaResolver(CatalogTableSchemaResolver schemaResolver) {
+		this.schemaResolver = schemaResolver;
 	}
 
 	/**
@@ -305,18 +324,25 @@ public final class CatalogManager {
 	public static class TableLookupResult {
 		private final boolean isTemporary;
 		private final CatalogBaseTable table;
+		private final TableSchema resolvedSchema;
 
-		private static TableLookupResult temporary(CatalogBaseTable table) {
-			return new TableLookupResult(true, table);
+		@VisibleForTesting
+		public static TableLookupResult temporary(CatalogBaseTable table, TableSchema resolvedSchema) {
+			return new TableLookupResult(true, table, resolvedSchema);
 		}
 
-		private static TableLookupResult permanent(CatalogBaseTable table) {
-			return new TableLookupResult(false, table);
+		@VisibleForTesting
+		public static TableLookupResult permanent(CatalogBaseTable table, TableSchema resolvedSchema) {
+			return new TableLookupResult(false, table, resolvedSchema);
 		}
 
-		private TableLookupResult(boolean isTemporary, CatalogBaseTable table) {
+		private TableLookupResult(
+				boolean isTemporary,
+				CatalogBaseTable table,
+				TableSchema resolvedSchema) {
 			this.isTemporary = isTemporary;
 			this.table = table;
+			this.resolvedSchema = resolvedSchema;
 		}
 
 		public boolean isTemporary() {
@@ -325,6 +351,10 @@ public final class CatalogManager {
 
 		public CatalogBaseTable getTable() {
 			return table;
+		}
+
+		public TableSchema getResolvedSchema() {
+			return resolvedSchema;
 		}
 	}
 
@@ -336,16 +366,18 @@ public final class CatalogManager {
 	 * @return table that the path points to.
 	 */
 	public Optional<TableLookupResult> getTable(ObjectIdentifier objectIdentifier) {
-		try {
-			CatalogBaseTable temporaryTable = temporaryTables.get(objectIdentifier);
-			if (temporaryTable != null) {
-				return Optional.of(TableLookupResult.temporary(temporaryTable));
-			} else {
-				return getPermanentTable(objectIdentifier);
-			}
-		} catch (TableNotExistException ignored) {
+		Preconditions.checkNotNull(schemaResolver, "schemaResolver should not be null");
+		CatalogBaseTable temporaryTable = temporaryTables.get(objectIdentifier);
+		if (temporaryTable != null) {
+			TableSchema resolvedSchema = resolveTableSchema(temporaryTable);
+			return Optional.of(TableLookupResult.temporary(temporaryTable, resolvedSchema));
+		} else {
+			return getPermanentTable(objectIdentifier);
 		}
-		return Optional.empty();
+	}
+
+	private TableSchema resolveTableSchema(CatalogBaseTable table) {
+		return schemaResolver.resolve(table.getSchema());
 	}
 
 	/**
@@ -367,13 +399,17 @@ public final class CatalogManager {
 		return Optional.empty();
 	}
 
-	private Optional<TableLookupResult> getPermanentTable(ObjectIdentifier objectIdentifier)
-			throws TableNotExistException {
+	private Optional<TableLookupResult> getPermanentTable(ObjectIdentifier objectIdentifier) {
 		Catalog currentCatalog = catalogs.get(objectIdentifier.getCatalogName());
 		ObjectPath objectPath = objectIdentifier.toObjectPath();
-
-		if (currentCatalog != null && currentCatalog.tableExists(objectPath)) {
-			return Optional.of(TableLookupResult.permanent(currentCatalog.getTable(objectPath)));
+		if (currentCatalog != null) {
+			try {
+				CatalogBaseTable catalogTable = currentCatalog.getTable(objectPath);
+				TableSchema resolvedSchema = resolveTableSchema(catalogTable);
+				return Optional.of(TableLookupResult.permanent(catalogTable, resolvedSchema));
+			} catch (TableNotExistException e) {
+				// Ignore.
+			}
 		}
 		return Optional.empty();
 	}
@@ -682,20 +718,58 @@ public final class CatalogManager {
 	 * Drops a table in a given fully qualified path.
 	 *
 	 * @param objectIdentifier The fully qualified path of the table to drop.
-	 * @param ignoreIfNotExists If false exception will be thrown if the table or database or catalog to be altered
+	 * @param ignoreIfNotExists If false exception will be thrown if the table to drop
 	 *                          does not exist.
 	 */
 	public void dropTable(ObjectIdentifier objectIdentifier, boolean ignoreIfNotExists) {
-		if (temporaryTables.containsKey(objectIdentifier)) {
+		dropTableInternal(
+				objectIdentifier,
+				ignoreIfNotExists,
+				true);
+	}
+
+	/**
+	 * Drops a view in a given fully qualified path.
+	 *
+	 * @param objectIdentifier The fully qualified path of the view to drop.
+	 * @param ignoreIfNotExists If false exception will be thrown if the view to drop
+	 *                          does not exist.
+	 */
+	public void dropView(ObjectIdentifier objectIdentifier, boolean ignoreIfNotExists) {
+		dropTableInternal(
+				objectIdentifier,
+				ignoreIfNotExists,
+				false);
+	}
+
+	private void dropTableInternal(
+			ObjectIdentifier objectIdentifier,
+			boolean ignoreIfNotExists,
+			boolean isDropTable) {
+		Predicate<CatalogBaseTable> filter = isDropTable
+				? table -> table instanceof CatalogTable
+				: table -> table instanceof CatalogView;
+		// Same name temporary table or view exists.
+		if (filter.test(temporaryTables.get(objectIdentifier))) {
+			String tableOrView = isDropTable ? "table" : "view";
 			throw new ValidationException(String.format(
-				"Temporary table with identifier '%s' exists. Drop it first before removing the permanent table.",
-				objectIdentifier));
+					"Temporary %s with identifier '%s' exists. "
+							+ "Drop it first before removing the permanent %s.",
+					tableOrView, objectIdentifier, tableOrView));
 		}
-		execute(
-			(catalog, path) -> catalog.dropTable(path, ignoreIfNotExists),
-			objectIdentifier,
-			ignoreIfNotExists,
-			"DropTable");
+		final Optional<TableLookupResult> resultOpt = getPermanentTable(objectIdentifier);
+		if (resultOpt.isPresent() && filter.test(resultOpt.get().getTable())) {
+			execute(
+					(catalog, path) -> catalog.dropTable(path, ignoreIfNotExists),
+					objectIdentifier,
+					ignoreIfNotExists,
+					"DropTable");
+		} else if (!ignoreIfNotExists) {
+			String tableOrView = isDropTable ? "Table" : "View";
+			throw new ValidationException(String.format(
+					"%s with identifier '%s' does not exist.",
+					tableOrView, objectIdentifier.asSummaryString()));
+		}
 	}
 
 	/**

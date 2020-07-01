@@ -21,7 +21,6 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.client.cli.utils.SqlParserHelper;
-import org.apache.flink.table.client.config.entries.ViewEntry;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
@@ -31,7 +30,10 @@ import org.apache.flink.table.client.gateway.TypedResult;
 import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.function.BiConsumerWithException;
+import org.apache.flink.util.function.BiFunctionWithException;
+import org.apache.flink.util.function.FunctionWithException;
 import org.apache.flink.util.function.SupplierWithException;
+import org.apache.flink.util.function.TriFunctionWithException;
 
 import java.util.List;
 import java.util.Map;
@@ -56,7 +58,16 @@ class TestingExecutor implements Executor {
 	private final BiConsumerWithException<String, String, SqlExecutionException> useCatalogConsumer;
 
 	private int numUseDatabaseCalls = 0;
-	private BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer;
+	private final BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer;
+
+	private int numExecuteSqlCalls = 0;
+	private final BiFunctionWithException<String, String, TableResult, SqlExecutionException> executeSqlConsumer;
+
+	private int numSetSessionPropertyCalls = 0;
+	private final TriFunctionWithException<String, String, String, Void, SqlExecutionException> setSessionPropertyFunction;
+
+	private int numResetSessionPropertiesCalls = 0;
+	private final FunctionWithException<String, Void, SqlExecutionException> resetSessionPropertiesFunction;
 
 	private final SqlParserHelper helper;
 
@@ -65,12 +76,18 @@ class TestingExecutor implements Executor {
 			List<SupplierWithException<TypedResult<Integer>, SqlExecutionException>> snapshotResults,
 			List<SupplierWithException<List<Row>, SqlExecutionException>> resultPages,
 			BiConsumerWithException<String, String, SqlExecutionException> useCatalogConsumer,
-			BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer) {
+			BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer,
+			BiFunctionWithException<String, String, TableResult, SqlExecutionException> executeSqlConsumer,
+			TriFunctionWithException<String, String, String, Void, SqlExecutionException> setSessionPropertyFunction,
+			FunctionWithException<String, Void, SqlExecutionException> resetSessionPropertiesFunction) {
 		this.resultChanges = resultChanges;
 		this.snapshotResults = snapshotResults;
 		this.resultPages = resultPages;
 		this.useCatalogConsumer = useCatalogConsumer;
 		this.useDatabaseConsumer = useDatabaseConsumer;
+		this.executeSqlConsumer = executeSqlConsumer;
+		this.setSessionPropertyFunction = setSessionPropertyFunction;
+		this.resetSessionPropertiesFunction = resetSessionPropertiesFunction;
 		helper = new SqlParserHelper();
 		helper.registerTables();
 	}
@@ -127,23 +144,14 @@ class TestingExecutor implements Executor {
 
 	@Override
 	public void resetSessionProperties(String sessionId) throws SqlExecutionException {
+		numResetSessionPropertiesCalls++;
+		resetSessionPropertiesFunction.apply(sessionId);
 	}
 
 	@Override
 	public void setSessionProperty(String sessionId, String key, String value) throws SqlExecutionException {
-	}
-
-	@Override
-	public void addView(String sessionId, String name, String query) throws SqlExecutionException {
-	}
-
-	@Override
-	public void removeView(String sessionId, String name) throws SqlExecutionException {
-	}
-
-	@Override
-	public Map<String, ViewEntry> listViews(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
+		numSetSessionPropertyCalls++;
+		setSessionPropertyFunction.apply(sessionId, key, value);
 	}
 
 	@Override
@@ -176,7 +184,8 @@ class TestingExecutor implements Executor {
 
 	@Override
 	public TableResult executeSql(String sessionId, String statement) throws SqlExecutionException {
-		return null;
+		numExecuteSqlCalls++;
+		return executeSqlConsumer.apply(sessionId, statement);
 	}
 
 	@Override
@@ -236,5 +245,17 @@ class TestingExecutor implements Executor {
 
 	public int getNumUseDatabaseCalls() {
 		return numUseDatabaseCalls;
+	}
+
+	public int getNumExecuteSqlCalls() {
+		return numExecuteSqlCalls;
+	}
+
+	public int getNumSetSessionPropertyCalls() {
+		return numSetSessionPropertyCalls;
+	}
+
+	public int getNumResetSessionPropertiesCalls() {
+		return numResetSessionPropertiesCalls;
 	}
 }

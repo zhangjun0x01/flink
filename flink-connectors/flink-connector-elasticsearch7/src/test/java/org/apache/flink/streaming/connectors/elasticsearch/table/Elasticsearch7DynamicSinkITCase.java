@@ -105,12 +105,12 @@ public class Elasticsearch7DynamicSinkITCase {
 		Map<String, Object> response = client.get(new GetRequest(index, "1_2012-12-12T12:12:12")).actionGet().getSource();
 		Map<Object, Object> expectedMap = new HashMap<>();
 		expectedMap.put("a", 1);
-		expectedMap.put("b", "00:00:12Z");
+		expectedMap.put("b", "00:00:12");
 		expectedMap.put("c", "ABCDE");
 		expectedMap.put("d", 12.12d);
 		expectedMap.put("e", 2);
 		expectedMap.put("f", "2003-10-20");
-		expectedMap.put("g", "2012-12-12T12:12:12Z");
+		expectedMap.put("g", "2012-12-12 12:12:12");
 		assertThat(response, equalTo(expectedMap));
 	}
 
@@ -159,12 +159,12 @@ public class Elasticsearch7DynamicSinkITCase {
 		Map<String, Object> response = client.get(new GetRequest(index, "1_2012-12-12T12:12:12")).actionGet().getSource();
 		Map<Object, Object> expectedMap = new HashMap<>();
 		expectedMap.put("a", 1);
-		expectedMap.put("b", "00:00:12Z");
+		expectedMap.put("b", "00:00:12");
 		expectedMap.put("c", "ABCDE");
 		expectedMap.put("d", 12.12d);
 		expectedMap.put("e", 2);
 		expectedMap.put("f", "2003-10-20");
-		expectedMap.put("g", "2012-12-12T12:12:12Z");
+		expectedMap.put("g", "2012-12-12 12:12:12");
 		assertThat(response, equalTo(expectedMap));
 	}
 
@@ -211,27 +211,31 @@ public class Elasticsearch7DynamicSinkITCase {
 
 		// search API does not return documents that were not indexed, we might need to query
 		// the index a few times
-		Deadline deadline = Deadline.fromNow(Duration.ofSeconds(1));
+		Deadline deadline = Deadline.fromNow(Duration.ofSeconds(30));
 		SearchHits hits;
 		do {
 			hits = client.prepareSearch(index)
 				.execute()
 				.actionGet()
 				.getHits();
-			if (hits.getTotalHits().value == 0) {
-				Thread.sleep(100);
+			if (hits.getTotalHits().value < 1) {
+				Thread.sleep(200);
 			}
-		} while (hits.getTotalHits().value == 0 && deadline.hasTimeLeft());
+		} while (hits.getTotalHits().value < 1 && deadline.hasTimeLeft());
+
+		if (hits.getTotalHits().value < 1) {
+			throw new AssertionError("Could not retrieve results from Elasticsearch.");
+		}
 
 		Map<String, Object> result = hits.getAt(0).getSourceAsMap();
 		Map<Object, Object> expectedMap = new HashMap<>();
 		expectedMap.put("a", 1);
-		expectedMap.put("b", "00:00:12Z");
+		expectedMap.put("b", "00:00:12");
 		expectedMap.put("c", "ABCDE");
 		expectedMap.put("d", 12.12d);
 		expectedMap.put("e", 2);
 		expectedMap.put("f", "2003-10-20");
-		expectedMap.put("g", "2012-12-12T12:12:12Z");
+		expectedMap.put("g", "2012-12-12 12:12:12");
 		assertThat(result, equalTo(expectedMap));
 	}
 

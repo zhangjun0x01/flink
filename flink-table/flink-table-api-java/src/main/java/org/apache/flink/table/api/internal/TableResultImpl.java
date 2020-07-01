@@ -27,6 +27,7 @@ import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.utils.PrintUtils;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -51,14 +52,14 @@ class TableResultImpl implements TableResult {
 	private final JobClient jobClient;
 	private final TableSchema tableSchema;
 	private final ResultKind resultKind;
-	private final Iterator<Row> data;
+	private final CloseableIterator<Row> data;
 	private final PrintStyle printStyle;
 
 	private TableResultImpl(
 			@Nullable JobClient jobClient,
 			TableSchema tableSchema,
 			ResultKind resultKind,
-			Iterator<Row> data,
+			CloseableIterator<Row> data,
 			PrintStyle printStyle) {
 		this.jobClient = jobClient;
 		this.tableSchema = Preconditions.checkNotNull(tableSchema, "tableSchema should not be null");
@@ -83,7 +84,7 @@ class TableResultImpl implements TableResult {
 	}
 
 	@Override
-	public Iterator<Row> collect() {
+	public CloseableIterator<Row> collect() {
 		return data;
 	}
 
@@ -93,8 +94,14 @@ class TableResultImpl implements TableResult {
 		if (printStyle instanceof TableauStyle) {
 			int maxColumnWidth = ((TableauStyle) printStyle).getMaxColumnWidth();
 			String nullColumn = ((TableauStyle) printStyle).getNullColumn();
+			boolean deriveColumnWidthByType =  ((TableauStyle) printStyle).isDeriveColumnWidthByType();
 			PrintUtils.printAsTableauForm(
-					getTableSchema(), it, new PrintWriter(System.out), maxColumnWidth, nullColumn);
+					getTableSchema(),
+					it,
+					new PrintWriter(System.out),
+					maxColumnWidth,
+					nullColumn,
+					deriveColumnWidthByType);
 		} else if (printStyle instanceof RawContentStyle) {
 			while (it.hasNext()) {
 				System.out.println(String.join(",", PrintUtils.rowToString(it.next())));
@@ -115,8 +122,8 @@ class TableResultImpl implements TableResult {
 		private JobClient jobClient = null;
 		private TableSchema tableSchema = null;
 		private ResultKind resultKind = null;
-		private Iterator<Row> data = null;
-		private PrintStyle printStyle = PrintStyle.tableau(Integer.MAX_VALUE, PrintUtils.NULL_COLUMN);
+		private CloseableIterator<Row> data = null;
+		private PrintStyle printStyle = PrintStyle.tableau(Integer.MAX_VALUE, PrintUtils.NULL_COLUMN, false);
 
 		private Builder() {
 		}
@@ -158,7 +165,7 @@ class TableResultImpl implements TableResult {
 		 *
 		 * @param rowIterator a row iterator as the execution result.
 		 */
-		public Builder data(Iterator<Row> rowIterator) {
+		public Builder data(CloseableIterator<Row> rowIterator) {
 			Preconditions.checkNotNull(rowIterator, "rowIterator should not be null");
 			this.data = rowIterator;
 			return this;
@@ -171,7 +178,7 @@ class TableResultImpl implements TableResult {
 		 */
 		public Builder data(List<Row> rowList) {
 			Preconditions.checkNotNull(rowList, "listRows should not be null");
-			this.data = rowList.iterator();
+			this.data = CloseableIterator.adapterForIterator(rowList.iterator());
 			return this;
 		}
 
@@ -197,13 +204,17 @@ class TableResultImpl implements TableResult {
 	 */
 	public interface PrintStyle {
 		/**
-		 * Create a tableau print style with given max column width and null column,
+		 * Create a tableau print style with given max column width, null column,
+		 * and a flag to indicate whether the column width is derived from type (true) or content (false),
 		 * which prints the result schema and content as tableau form.
 		 */
-		static PrintStyle tableau(int maxColumnWidth, String nullColumn) {
+		static PrintStyle tableau(
+				int maxColumnWidth,
+				String nullColumn,
+				boolean deriveColumnWidthByType) {
 			Preconditions.checkArgument(maxColumnWidth > 0, "maxColumnWidth should be greater than 0");
 			Preconditions.checkNotNull(nullColumn, "nullColumn should not be null");
-			return new TableauStyle(maxColumnWidth, nullColumn);
+			return new TableauStyle(maxColumnWidth, nullColumn, deriveColumnWidthByType);
 		}
 
 		/**
@@ -220,13 +231,24 @@ class TableResultImpl implements TableResult {
 	 * print the result schema and content as tableau form.
 	 */
 	private static final class TableauStyle implements PrintStyle {
-
+		/**
+		 * A flag to indicate whether the column width is derived from type (true) or content (false).
+		 */
+		private final boolean deriveColumnWidthByType;
 		private final int maxColumnWidth;
 		private final String nullColumn;
 
-		private TableauStyle(int maxColumnWidth, String nullColumn) {
+		private TableauStyle(
+				int maxColumnWidth,
+				String nullColumn,
+				boolean deriveColumnWidthByType) {
+			this.deriveColumnWidthByType = deriveColumnWidthByType;
 			this.maxColumnWidth = maxColumnWidth;
 			this.nullColumn = nullColumn;
+		}
+
+		public boolean isDeriveColumnWidthByType() {
+			return deriveColumnWidthByType;
 		}
 
 		int getMaxColumnWidth() {

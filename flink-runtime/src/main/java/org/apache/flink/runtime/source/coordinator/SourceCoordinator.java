@@ -113,6 +113,7 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT> implements 
 		boolean successfullyClosed = false;
 		try {
 			if (started) {
+				context.close();
 				enumerator.close();
 			}
 		} finally {
@@ -165,17 +166,18 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT> implements 
 	}
 
 	@Override
-	public CompletableFuture<byte[]> checkpointCoordinator(long checkpointId) throws Exception {
+	public void checkpointCoordinator(long checkpointId, CompletableFuture<byte[]> result) throws Exception {
 		ensureStarted();
-		return CompletableFuture.supplyAsync(() -> {
+
+		coordinatorExecutor.execute(() -> {
 			try {
 				LOG.debug("Taking a state snapshot on operator {} for checkpoint {}", operatorName, checkpointId);
-				return toBytes(checkpointId);
+				result.complete(toBytes(checkpointId));
 			} catch (Exception e) {
-				throw new CompletionException(
-						String.format("Failed to checkpoint coordinator for source %s due to ", operatorName), e);
+				result.completeExceptionally(new CompletionException(
+						String.format("Failed to checkpoint coordinator for source %s due to ", operatorName), e));
 			}
-		}, coordinatorExecutor);
+		});
 	}
 
 	@Override
@@ -201,10 +203,6 @@ public class SourceCoordinator<SplitT extends SourceSplit, EnumChkT> implements 
 					"only be reset to a checkpoint before it starts.", operatorName));
 		}
 		LOG.info("Resetting coordinator of source {} from checkpoint.", operatorName);
-		if (started) {
-			enumerator.close();
-		}
-		LOG.info("Resetting SourceCoordinator from checkpoint.");
 		fromBytes(checkpointData);
 	}
 

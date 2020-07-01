@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.api.graph;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -192,6 +193,38 @@ public class StreamingJobGraphGeneratorTest extends TestLogger {
 	}
 
 	@Test
+	public void testEnabledUnalignedCheckAndDisabledCheckpointing() {
+		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.fromElements(0).print();
+		StreamGraph streamGraph = env.getStreamGraph();
+		assertFalse("Checkpointing enabled", streamGraph.getCheckpointConfig().isCheckpointingEnabled());
+		env.getCheckpointConfig().enableUnalignedCheckpoints(true);
+
+		JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(streamGraph);
+
+		List<JobVertex> verticesSorted = jobGraph.getVerticesSortedTopologicallyFromSources();
+		StreamConfig streamConfig = new StreamConfig(verticesSorted.get(0).getConfiguration());
+		assertEquals(CheckpointingMode.AT_LEAST_ONCE, streamConfig.getCheckpointMode());
+		assertFalse(streamConfig.isUnalignedCheckpointsEnabled());
+	}
+
+	@Test
+	public void testUnalignedCheckAndAtLeastOnce() {
+		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.fromElements(0).print();
+		StreamGraph streamGraph = env.getStreamGraph();
+		env.enableCheckpointing(1000, CheckpointingMode.AT_LEAST_ONCE);
+		env.getCheckpointConfig().enableUnalignedCheckpoints(true);
+
+		JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(streamGraph);
+
+		List<JobVertex> verticesSorted = jobGraph.getVerticesSortedTopologicallyFromSources();
+		StreamConfig streamConfig = new StreamConfig(verticesSorted.get(0).getConfiguration());
+		assertEquals(CheckpointingMode.AT_LEAST_ONCE, streamConfig.getCheckpointMode());
+		assertFalse(streamConfig.isUnalignedCheckpointsEnabled());
+	}
+
+	@Test
 	public void generatorForwardsSavepointRestoreSettings() {
 		StreamGraph streamGraph = new StreamGraph(
 				new ExecutionConfig(),
@@ -250,8 +283,10 @@ public class StreamingJobGraphGeneratorTest extends TestLogger {
 	@Test
 	public void testOperatorCoordinatorAddedToJobVertex() {
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		DataStream<Integer> stream =
-				env.continuousSource(new MockSource(Boundedness.BOUNDED, 1), "TestingSource");
+		DataStream<Integer> stream = env.fromSource(
+				new MockSource(Boundedness.BOUNDED, 1),
+				WatermarkStrategy.noWatermarks(),
+				"TestingSource");
 
 		OneInputTransformation<Integer, Integer> resultTransform = new OneInputTransformation<Integer, Integer>(
 				stream.getTransformation(),
@@ -458,8 +493,10 @@ public class StreamingJobGraphGeneratorTest extends TestLogger {
 	@Test
 	public void testCoordinatedOperator() {
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		DataStream<Integer> source =
-				env.continuousSource(new MockSource(Boundedness.BOUNDED, 1), "TestSource");
+		DataStream<Integer> source = env.fromSource(
+				new MockSource(Boundedness.BOUNDED, 1),
+				WatermarkStrategy.noWatermarks(),
+				"TestSource");
 		source.addSink(new DiscardingSink<>());
 
 		StreamGraph streamGraph = env.getStreamGraph();

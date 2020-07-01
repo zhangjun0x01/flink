@@ -20,11 +20,14 @@ package org.apache.flink.table.filesystem.stream;
 
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.streaming.api.functions.sink.filesystem.Bucket;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketLifeCycleListener;
 import org.apache.flink.streaming.api.functions.sink.filesystem.Buckets;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSinkHelper;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
+import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -50,29 +53,26 @@ public class StreamingFileWriter extends AbstractStreamOperator<CommitMessage>
 
 	private final long bucketCheckInterval;
 
-	private final StreamingFileSink.BucketsBuilder<RowData, ?, ? extends
-			StreamingFileSink.BucketsBuilder<RowData, ?, ?>> bucketsBuilder;
-
-	private final InactiveBucketListener listener;
+	private final StreamingFileSink.BucketsBuilder<RowData, String, ? extends
+			StreamingFileSink.BucketsBuilder<RowData, String, ?>> bucketsBuilder;
 
 	// --------------------------- runtime fields -----------------------------
 
-	private transient Buckets<RowData, ?> buckets;
+	private transient Buckets<RowData, String> buckets;
 
 	private transient StreamingFileSinkHelper<RowData> helper;
 
-	private transient long currentWatermark = Long.MIN_VALUE;
+	private transient long currentWatermark;
 
 	private transient Set<String> inactivePartitions;
 
 	public StreamingFileWriter(
 			long bucketCheckInterval,
-			StreamingFileSink.BucketsBuilder<RowData, ?, ? extends
-					StreamingFileSink.BucketsBuilder<RowData, ?, ?>> bucketsBuilder,
-			InactiveBucketListener listener) {
+			StreamingFileSink.BucketsBuilder<RowData, String, ? extends
+					StreamingFileSink.BucketsBuilder<RowData, String, ?>> bucketsBuilder) {
 		this.bucketCheckInterval = bucketCheckInterval;
 		this.bucketsBuilder = bucketsBuilder;
-		this.listener = listener;
+		setChainingStrategy(ChainingStrategy.ALWAYS);
 	}
 
 	@Override
@@ -87,7 +87,18 @@ public class StreamingFileWriter extends AbstractStreamOperator<CommitMessage>
 				bucketCheckInterval);
 
 		inactivePartitions = new HashSet<>();
-		listener.setInactiveConsumer(b -> inactivePartitions.add(b));
+		currentWatermark = Long.MIN_VALUE;
+		buckets.setBucketLifeCycleListener(new BucketLifeCycleListener<RowData, String>() {
+
+			@Override
+			public void bucketCreated(Bucket<RowData, String> bucket) {
+			}
+
+			@Override
+			public void bucketInactive(Bucket<RowData, String> bucket) {
+				inactivePartitions.add(bucket.getBucketId());
+			}
+		});
 	}
 
 	@Override

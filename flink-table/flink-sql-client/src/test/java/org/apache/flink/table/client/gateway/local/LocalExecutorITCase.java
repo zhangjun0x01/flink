@@ -47,6 +47,7 @@ import org.apache.flink.table.client.gateway.SqlExecutionException;
 import org.apache.flink.table.client.gateway.TypedResult;
 import org.apache.flink.table.client.gateway.utils.EnvironmentFileUtil;
 import org.apache.flink.table.client.gateway.utils.SimpleCatalogFactory;
+import org.apache.flink.table.client.gateway.utils.TestUserClassLoaderJar;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.test.util.TestBaseUtils;
@@ -127,9 +128,16 @@ public class LocalExecutorITCase extends TestLogger {
 
 	private static ClusterClient<?> clusterClient;
 
+	// a generated UDF jar used for testing classloading of dependencies
+	private static URL udfDependency;
+
 	@BeforeClass
-	public static void setup() {
+	public static void setup() throws IOException {
 		clusterClient = MINI_CLUSTER_RESOURCE.getClusterClient();
+		File udfJar = TestUserClassLoaderJar.createJarFile(
+			tempFolder.newFolder("test-jar"),
+			"test-classloader-udf.jar");
+		udfDependency = udfJar.toURI().toURL();
 	}
 
 	private static Configuration getConfig() {
@@ -154,8 +162,19 @@ public class LocalExecutorITCase extends TestLogger {
 		String sessionId = executor.openSession(session);
 		assertEquals("test-session", sessionId);
 
-		executor.addView(sessionId, "AdditionalView1", "SELECT 1");
-		executor.addView(sessionId, "AdditionalView2", "SELECT * FROM AdditionalView1");
+		executor.executeSql(sessionId,
+				"CREATE TEMPORARY VIEW IF NOT EXISTS AdditionalView1 AS SELECT 1");
+		try {
+			executor.executeSql(sessionId,
+					"CREATE TEMPORARY VIEW AdditionalView1 AS SELECT 2");
+			fail("unexpected exception");
+		} catch (Exception var1) {
+			assertThat(var1.getCause().getMessage(),
+					is("Temporary table '`default_catalog`.`default_database`.`AdditionalView1`' already exists"));
+		}
+		executor.executeSql(sessionId, "CREATE VIEW AdditionalView1 AS SELECT 2");
+		executor.executeSql(sessionId,
+				"CREATE TEMPORARY VIEW IF NOT EXISTS AdditionalView2 AS SELECT * FROM AdditionalView1");
 
 		List<String> actualTables = executor.listTables(sessionId);
 		List<String> expectedTables = Arrays.asList(
@@ -168,16 +187,19 @@ public class LocalExecutorITCase extends TestLogger {
 				"TestView2");
 		assertEquals(expectedTables, actualTables);
 
+		// Although AdditionalView2 needs AdditionalView1, dropping AdditionalView1 first does not
+		// throw.
 		try {
-			executor.removeView(sessionId, "AdditionalView1");
-			fail();
-		} catch (SqlExecutionException e) {
-			// AdditionalView2 needs AdditionalView1
+			executor.executeSql(sessionId, "DROP VIEW AdditionalView1");
+			fail("unexpected exception");
+		} catch (Exception var1) {
+			assertThat(var1.getCause().getMessage(),
+					is("Temporary view with identifier '`default_catalog`.`default_database`.`AdditionalView1`' exists. "
+							+ "Drop it first before removing the permanent view."));
 		}
-
-		executor.removeView(sessionId, "AdditionalView2");
-
-		executor.removeView(sessionId, "AdditionalView1");
+		executor.executeSql(sessionId, "DROP TEMPORARY VIEW AdditionalView1");
+		executor.executeSql(sessionId, "DROP VIEW AdditionalView1");
+		executor.executeSql(sessionId, "DROP TEMPORARY VIEW AdditionalView2");
 
 		actualTables = executor.listTables(sessionId);
 		expectedTables = Arrays.asList(
@@ -390,8 +412,8 @@ public class LocalExecutorITCase extends TestLogger {
 			expectedProperties.put("execution.periodic-watermarks-interval", "99");
 			expectedProperties.put("execution.parallelism", "1");
 			expectedProperties.put("execution.max-parallelism", "16");
-			expectedProperties.put("execution.max-idle-state-retention", "0");
-			expectedProperties.put("execution.min-idle-state-retention", "0");
+			expectedProperties.put("execution.max-idle-state-retention", "600000");
+			expectedProperties.put("execution.min-idle-state-retention", "1000");
 			expectedProperties.put("execution.result-mode", "table");
 			expectedProperties.put("execution.max-table-result-rows", "100");
 			expectedProperties.put("execution.restart-strategy.type", "failure-rate");
@@ -821,14 +843,16 @@ public class LocalExecutorITCase extends TestLogger {
 		assertEquals("test-session", sessionId);
 
 		try {
+			executor.executeSql(sessionId, "CREATE FUNCTION LowerUDF AS 'LowerUDF'");
 			// Case 1: Registered sink
 			// Case 1.1: Registered sink with uppercase insert into keyword.
+			// FLINK-18302: wrong classloader when INSERT INTO with UDF
 			final String statement1 = "INSERT INTO TableSourceSink SELECT IntegerField1 = 42," +
-					" StringField1, TimestampField1 FROM TableNumber1";
+					" LowerUDF(StringField1), TimestampField1 FROM TableNumber1";
 			executeAndVerifySinkResult(executor, sessionId, statement1, csvOutputPath);
 			// Case 1.2: Registered sink with lowercase insert into keyword.
 			final String statement2 = "insert Into TableSourceSink \n "
-					+ "SELECT IntegerField1 = 42, StringField1, TimestampField1 "
+					+ "SELECT IntegerField1 = 42, LowerUDF(StringField1), TimestampField1 "
 					+ "FROM TableNumber1";
 			executeAndVerifySinkResult(executor, sessionId, statement2, csvOutputPath);
 			// Case 1.3: Execute the same statement again, the results should expect to be the same.
@@ -1361,12 +1385,12 @@ public class LocalExecutorITCase extends TestLogger {
 		final List<String> actualResults = new ArrayList<>();
 		TestBaseUtils.readAllResultLines(actualResults, path);
 		final List<String> expectedResults = new ArrayList<>();
-		expectedResults.add("true,Hello World,2020-01-01 00:00:01.0");
-		expectedResults.add("false,Hello World,2020-01-01 00:00:02.0");
-		expectedResults.add("false,Hello World,2020-01-01 00:00:03.0");
-		expectedResults.add("false,Hello World,2020-01-01 00:00:04.0");
-		expectedResults.add("true,Hello World,2020-01-01 00:00:05.0");
-		expectedResults.add("false,Hello World!!!!,2020-01-01 00:00:06.0");
+		expectedResults.add("true,hello world,2020-01-01 00:00:01.0");
+		expectedResults.add("false,hello world,2020-01-01 00:00:02.0");
+		expectedResults.add("false,hello world,2020-01-01 00:00:03.0");
+		expectedResults.add("false,hello world,2020-01-01 00:00:04.0");
+		expectedResults.add("true,hello world,2020-01-01 00:00:05.0");
+		expectedResults.add("false,hello world!!!!,2020-01-01 00:00:06.0");
 		TestBaseUtils.compareResultCollections(expectedResults, actualResults, Comparator.naturalOrder());
 	}
 
@@ -1417,7 +1441,7 @@ public class LocalExecutorITCase extends TestLogger {
 		replaceVars.putIfAbsent("$VAR_RESTART_STRATEGY_TYPE", "failure-rate");
 		return new LocalExecutor(
 				EnvironmentFileUtil.parseModified(DEFAULTS_ENVIRONMENT_FILE, replaceVars),
-				Collections.emptyList(),
+				Collections.singletonList(udfDependency),
 				clusterClient.getFlinkConfiguration(),
 				new DefaultCLI(clusterClient.getFlinkConfiguration()),
 				new DefaultClusterClientServiceLoader());

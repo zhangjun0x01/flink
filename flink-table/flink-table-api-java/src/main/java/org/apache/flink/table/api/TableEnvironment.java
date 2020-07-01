@@ -21,6 +21,7 @@ package org.apache.flink.table.api;
 import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.api.internal.TableEnvironmentImpl;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.descriptors.ConnectTableDescriptor;
@@ -31,6 +32,7 @@ import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.module.Module;
 import org.apache.flink.table.sinks.TableSink;
 import org.apache.flink.table.sources.TableSource;
+import org.apache.flink.table.types.AbstractDataType;
 import org.apache.flink.table.types.DataType;
 
 import java.io.Serializable;
@@ -114,7 +116,7 @@ public interface TableEnvironment {
 	 * <p>The method will derive the types automatically from the input expressions. If types
 	 * at a certain position differ, the method will try to find a common super type for all types. If a common
 	 * super type does not exist, an exception will be thrown. If you want to specify the requested type explicitly
-	 * see {@link #fromValues(DataType, Object...)}.
+	 * see {@link #fromValues(AbstractDataType, Object...)}.
 	 *
 	 * <p>It is also possible to use {@link org.apache.flink.types.Row} object instead of
 	 * {@code row} expressions.
@@ -193,7 +195,7 @@ public interface TableEnvironment {
 	 * @param values Expressions for constructing rows of the VALUES table.
 	 * @see #fromValues(Object...)
 	 */
-	default Table fromValues(DataType rowType, Object... values) {
+	default Table fromValues(AbstractDataType<?> rowType, Object... values) {
 		// It is necessary here to implement TableEnvironment#fromValues(Object...) for BatchTableEnvImpl.
 		// In scala varargs are translated to Seq. Due to the type erasure Seq<Expression> and Seq<Object>
 		// are the same. It is not a problem in java as varargs in java are translated to an array.
@@ -297,7 +299,7 @@ public interface TableEnvironment {
 	 * @param values Expressions for constructing rows of the VALUES table.
 	 * @see #fromValues(Expression...)
 	 */
-	Table fromValues(DataType rowType, Expression... values);
+	Table fromValues(AbstractDataType<?> rowType, Expression... values);
 
 	/**
 	 * Creates a Table from given collection of objects.
@@ -312,19 +314,18 @@ public interface TableEnvironment {
 	/**
 	 * Creates a Table from given collection of objects with a given row type.
 	 *
-	 * <p>See {@link #fromValues(DataType, Object...)} for more explanation.
+	 * <p>See {@link #fromValues(AbstractDataType, Object...)} for more explanation.
 	 *
 	 * @param rowType Expected row type for the values.
 	 * @param values Expressions for constructing rows of the VALUES table.
-	 * @see #fromValues(DataType, Object...)
+	 * @see #fromValues(AbstractDataType, Object...)
 	 */
-	Table fromValues(DataType rowType, Iterable<?> values);
+	Table fromValues(AbstractDataType<?> rowType, Iterable<?> values);
 
 	/**
 	 * Creates a table from a table source.
 	 *
 	 * @param source table source used as table
-	 * @deprecated use {@link #createTemporaryView(String, Table)}.
 	 */
 	@Deprecated
 	Table fromTableSource(TableSource<?> source);
@@ -545,6 +546,55 @@ public interface TableEnvironment {
 	void createTemporaryView(String path, Table view);
 
 	/**
+	 * Registers an external {@link TableSource} in this {@link TableEnvironment}'s catalog.
+	 * Registered tables can be referenced in SQL queries.
+	 *
+	 * <p>Temporary objects can shadow permanent ones. If a permanent object in a given path exists, it will
+	 * be inaccessible in the current session. To make the permanent object available again one can drop the
+	 * corresponding temporary object.
+	 *
+	 * @param name        The name under which the {@link TableSource} is registered.
+	 * @param tableSource The {@link TableSource} to register.
+	 * @deprecated Use {@link #executeSql(String) executeSql(ddl)} to register a table instead.
+	 */
+	@Deprecated
+	void registerTableSource(String name, TableSource<?> tableSource);
+
+	/**
+	 * Registers an external {@link TableSink} with given field names and types in this
+	 * {@link TableEnvironment}'s catalog.
+	 * Registered sink tables can be referenced in SQL DML statements.
+	 *
+	 * <p>Temporary objects can shadow permanent ones. If a permanent object in a given path exists, it will
+	 * be inaccessible in the current session. To make the permanent object available again one can drop the
+	 * corresponding temporary object.
+	 *
+	 * @param name The name under which the {@link TableSink} is registered.
+	 * @param fieldNames The field names to register with the {@link TableSink}.
+	 * @param fieldTypes The field types to register with the {@link TableSink}.
+	 * @param tableSink The {@link TableSink} to register.
+	 * @deprecated Use {@link #executeSql(String) executeSql(ddl)} to register a table instead.
+	 */
+	@Deprecated
+	void registerTableSink(String name, String[] fieldNames, TypeInformation<?>[] fieldTypes, TableSink<?> tableSink);
+
+	/**
+	 * Registers an external {@link TableSink} with already configured field names and field types in
+	 * this {@link TableEnvironment}'s catalog.
+	 * Registered sink tables can be referenced in SQL DML statements.
+	 *
+	 * <p>Temporary objects can shadow permanent ones. If a permanent object in a given path exists, it will
+	 * be inaccessible in the current session. To make the permanent object available again one can drop the
+	 * corresponding temporary object.
+	 *
+	 * @param name The name under which the {@link TableSink} is registered.
+	 * @param configuredSink The configured {@link TableSink} to register.
+	 * @deprecated Use {@link #executeSql(String) executeSql(ddl)} to register a table instead.
+	 */
+	@Deprecated
+	void registerTableSink(String name, TableSink<?> configuredSink);
+
+	/**
 	 * Scans a registered table and returns the resulting {@link Table}.
 	 *
 	 * <p>A table to scan must be registered in the {@link TableEnvironment}. It can be either directly
@@ -678,7 +728,11 @@ public interface TableEnvironment {
 	 *</pre>
 	 *
 	 * @param connectorDescriptor connector descriptor describing the external system
+	 * @deprecated The SQL {@code CREATE TABLE} DDL is richer than this part of the API. This method
+	 * might be refactored in the next versions. Please use {@link #executeSql(String) executeSql(ddl)}
+	 * to register a table instead.
 	 */
+	@Deprecated
 	ConnectTableDescriptor connect(ConnectorDescriptor connectorDescriptor);
 
 	/**

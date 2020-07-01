@@ -101,12 +101,12 @@ public class MockChannelStateWriter implements ChannelStateWriter {
 	}
 
 	@Override
-	public ChannelStateWriteResult getWriteResult(long checkpointId) {
+	public ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId) {
 		return channelStateWriteResult;
 	}
 
 	@Override
-	public void abort(long checkpointId, Throwable cause) {
+	public void abort(long checkpointId, Throwable cause, boolean cleanup) {
 		checkCheckpointId(checkpointId);
 		channelStateWriteResult.getInputChannelStateHandles().cancel(false);
 		channelStateWriteResult.getResultSubpartitionStateHandles().cancel(false);
@@ -116,9 +116,5 @@ public class MockChannelStateWriter implements ChannelStateWriter {
 	public void close() {
 		channelStateWriteResult.getInputChannelStateHandles().cancel(false);
 		channelStateWriteResult.getResultSubpartitionStateHandles().cancel(false);
-	}
-
-	@Override
-	public void stop(long checkpointId) {
 	}
 }

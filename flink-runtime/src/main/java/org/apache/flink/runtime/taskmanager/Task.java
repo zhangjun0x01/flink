@@ -75,6 +75,7 @@ import org.apache.flink.runtime.taskexecutor.BackPressureSampleableTask;
 import org.apache.flink.runtime.taskexecutor.GlobalAggregateManager;
 import org.apache.flink.runtime.taskexecutor.KvStateService;
 import org.apache.flink.runtime.taskexecutor.PartitionProducerStateChecker;
+import org.apache.flink.util.TaskManagerExceptionUtils;
 import org.apache.flink.runtime.taskexecutor.slot.TaskSlotPayload;
 import org.apache.flink.runtime.util.FatalExitExceptionHandler;
 import org.apache.flink.types.Either;
@@ -598,7 +599,7 @@ public class Task implements Runnable, TaskSlotPayload, TaskActions, PartitionPr
 			// ----------------------------
 
 			// activate safety net for task thread
-			LOG.info("Creating FileSystem stream leak safety net for task {}", this);
+			LOG.debug("Creating FileSystem stream leak safety net for task {}", this);
 			FileSystemSafetyNet.initializeSafetyNetForThread();
 
 			// first of all, get a user-code classloader
@@ -754,7 +755,7 @@ public class Task implements Runnable, TaskSlotPayload, TaskActions, PartitionPr
 			// an exception was thrown as a side effect of cancelling
 			// ----------------------------------------------------------------
 
-			t = ExceptionUtils.tryEnrichTaskManagerError(t);
+			t = TaskManagerExceptionUtils.tryEnrichTaskManagerError(t);
 
 			try {
 				// check if the exception is unrecoverable
@@ -836,7 +837,7 @@ public class Task implements Runnable, TaskSlotPayload, TaskActions, PartitionPr
 				fileCache.releaseJob(jobId, executionId);
 
 				// close and de-activate safety net for task thread
-				LOG.info("Ensuring all FileSystem streams are closed for task {}", this);
+				LOG.debug("Ensuring all FileSystem streams are closed for task {}", this);
 				FileSystemSafetyNet.closeSafetyNetAndGuardedResourcesForThread();
 
 				notifyFinalState();

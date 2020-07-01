@@ -63,9 +63,6 @@ public class Buckets<IN, BucketID> {
 
 	private final RollingPolicy<IN, BucketID> rollingPolicy;
 
-	@Nullable
-	private final BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
-
 	// --------------------------- runtime fields -----------------------------
 
 	private final int subtaskIndex;
@@ -77,6 +74,9 @@ public class Buckets<IN, BucketID> {
 	private long maxPartCounter;
 
 	private final OutputFileConfig outputFileConfig;
+
+	@Nullable
+	private BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
 
 	// --------------------------- State Related Fields -----------------------------
 
@@ -97,7 +97,6 @@ public class Buckets<IN, BucketID> {
 			final BucketFactory<IN, BucketID> bucketFactory,
 			final BucketWriter<IN, BucketID> bucketWriter,
 			final RollingPolicy<IN, BucketID> rollingPolicy,
-			@Nullable final BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener,
 			final int subtaskIndex,
 			final OutputFileConfig outputFileConfig) {
 
@@ -106,7 +105,6 @@ public class Buckets<IN, BucketID> {
 		this.bucketFactory = Preconditions.checkNotNull(bucketFactory);
 		this.bucketWriter = Preconditions.checkNotNull(bucketWriter);
 		this.rollingPolicy = Preconditions.checkNotNull(rollingPolicy);
-		this.bucketLifeCycleListener = bucketLifeCycleListener;
 		this.subtaskIndex = subtaskIndex;
 
 		this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
@@ -119,6 +117,10 @@ public class Buckets<IN, BucketID> {
 			bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
 			bucketAssigner.getSerializer());
 		this.maxPartCounter = 0L;
+	}
+
+	public void setBucketLifeCycleListener(BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener) {
+		this.bucketLifeCycleListener = Preconditions.checkNotNull(bucketLifeCycleListener);
 	}
 
 	/**
@@ -185,6 +187,7 @@ public class Buckets<IN, BucketID> {
 
 	private void updateActiveBucketId(final BucketID bucketId, final Bucket<IN, BucketID> restoredBucket) throws IOException {
 		if (!restoredBucket.isActive()) {
+			notifyBucketInactive(restoredBucket);
 			return;
 		}
 
@@ -210,10 +213,7 @@ public class Buckets<IN, BucketID> {
 				// We've dealt with all the pending files and the writer for this bucket is not currently open.
 				// Therefore this bucket is currently inactive and we can remove it from our state.
 				activeBucketIt.remove();
-
-				if (bucketLifeCycleListener != null) {
-					bucketLifeCycleListener.bucketInactive(bucket);
-				}
+				notifyBucketInactive(bucket);
 			}
 		}
 	}
@@ -302,10 +302,7 @@ public class Buckets<IN, BucketID> {
 					rollingPolicy,
 					outputFileConfig);
 			activeBuckets.put(bucketId, bucket);
-
-			if (bucketLifeCycleListener != null) {
-				bucketLifeCycleListener.bucketCreated(bucket);
-			}
+			notifyBucketCreate(bucket);
 		}
 		return bucket;
 	}
@@ -328,6 +325,18 @@ public class Buckets<IN, BucketID> {
 			return basePath;
 		}
 		return new Path(basePath, child);
+	}
+
+	private void notifyBucketCreate(Bucket<IN, BucketID> bucket) {
+		if (bucketLifeCycleListener != null) {
+			bucketLifeCycleListener.bucketCreated(bucket);
+		}
+	}
+
+	private void notifyBucketInactive(Bucket<IN, BucketID> bucket) {
+		if (bucketLifeCycleListener != null) {
+			bucketLifeCycleListener.bucketInactive(bucket);
+		}
 	}
 
 	/**

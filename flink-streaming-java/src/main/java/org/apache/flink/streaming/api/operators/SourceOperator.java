@@ -19,11 +19,12 @@ package org.apache.flink.streaming.api.operators;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeutils.base.array.BytePrimitiveArraySerializer;
+import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceEvent;
-import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.api.connector.source.SourceSplit;
@@ -38,10 +39,14 @@ import org.apache.flink.runtime.source.event.ReaderRegistrationEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.streaming.api.operators.source.TimestampsAndWatermarks;
 import org.apache.flink.streaming.api.operators.util.SimpleVersionedListState;
 import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput;
+import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 import org.apache.flink.util.CollectionUtil;
+import org.apache.flink.util.FlinkRuntimeException;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
@@ -81,30 +86,47 @@ public class SourceOperator<OUT, SplitT extends SourceSplit>
 	/** The event gateway through which this operator talks to its coordinator. */
 	private final OperatorEventGateway operatorEventGateway;
 
-	// ---- lazily initialized fields ----
+	/** The factory for timestamps and watermark generators. */
+	private final WatermarkStrategy<OUT> watermarkStrategy;
+
+	// ---- lazily initialized fields (these fields are the "hot" fields) ----
 
 	/** The source reader that does most of the work. */
 	private SourceReader<OUT, SplitT> sourceReader;
 
+	private ReaderOutput<OUT> currentMainOutput;
+
+	private DataOutput<OUT> lastInvokedOutput;
+
 	/** The state that holds the currently assigned splits. */
 	private ListState<SplitT> readerState;
+
+	/** The event time and watermarking logic. Ideally this would be eagerly passed into this operator,
+	 * but we currently need to instantiate this lazily, because the metric groups exist only later. */
+	private TimestampsAndWatermarks<OUT> eventTimeLogic;
 
 	public SourceOperator(
 			Function<SourceReaderContext, SourceReader<OUT, SplitT>> readerFactory,
 			OperatorEventGateway operatorEventGateway,
-			SimpleVersionedSerializer<SplitT> splitSerializer) {
+			SimpleVersionedSerializer<SplitT> splitSerializer,
+			WatermarkStrategy<OUT> watermarkStrategy,
+			ProcessingTimeService timeService) {
 
 		this.readerFactory = checkNotNull(readerFactory);
 		this.operatorEventGateway = checkNotNull(operatorEventGateway);
 		this.splitSerializer = checkNotNull(splitSerializer);
+		this.watermarkStrategy = checkNotNull(watermarkStrategy);
+		this.processingTimeService = timeService;
 	}
 
 	@Override
 	public void open() throws Exception {
+		final MetricGroup metricGroup = getMetricGroup();
+
 		final SourceReaderContext context = new SourceReaderContext() {
 			@Override
 			public MetricGroup metricGroup() {
-				return getRuntimeContext().getMetricGroup();
+				return metricGroup;
 			}
 
 			@Override
@@ -112,6 +134,15 @@ public class SourceOperator<OUT, SplitT extends SourceSplit>
 				operatorEventGateway.sendEventToCoordinator(new SourceEventWrapper(event));
 			}
 		};
+
+		// in the future when we support both batch and streaming modes for the source operator,
+		// and when this one is migrated to the "eager initialization" operator (StreamOperatorV2),
+		// then we should evaluate this during operator construction.
+		eventTimeLogic = TimestampsAndWatermarks.createStreamingEventTimeLogic(
+				watermarkStrategy,
+				metricGroup,
+				getProcessingTimeService(),
+				getExecutionConfig().getAutoWatermarkInterval());
 
 		sourceReader = readerFactory.apply(context);
 
@@ -125,12 +156,31 @@ public class SourceOperator<OUT, SplitT extends SourceSplit>
 		sourceReader.start();
 		// Register the reader to the coordinator.
 		registerReader();
+
+		eventTimeLogic.startPeriodicWatermarkEmits();
 	}
 
 	@Override
-	@SuppressWarnings("unchecked")
+	public void close() throws Exception {
+		eventTimeLogic.stopPeriodicWatermarkEmits();
+		super.close();
+	}
+
+	@Override
 	public InputStatus emitNext(DataOutput<OUT> output) throws Exception {
-		return sourceReader.pollNext((SourceOutput<OUT>) output);
+		// guarding an assumptions we currently make due to the fact that certain classes
+		// assume a constant output
+		assert lastInvokedOutput == output || lastInvokedOutput == null;
+
+		// short circuit the common case (every invocation except the first)
+		if (currentMainOutput != null) {
+			return sourceReader.pollNext(currentMainOutput);
+		}
+
+		// this creates a batch or streaming output based on the runtime mode
+		currentMainOutput = eventTimeLogic.createMainOutput(output);
+		lastInvokedOutput = output;
+		return sourceReader.pollNext(currentMainOutput);
 	}
 
 	@Override
@@ -154,7 +204,11 @@ public class SourceOperator<OUT, SplitT extends SourceSplit>
 	@SuppressWarnings("unchecked")
 	public void handleOperatorEvent(OperatorEvent event) {
 		if (event instanceof AddSplitEvent) {
-			sourceReader.addSplits(((AddSplitEvent<SplitT>) event).splits());
+			try {
+				sourceReader.addSplits(((AddSplitEvent<SplitT>) event).splits(splitSerializer));
+			} catch (IOException e) {
+				throw new FlinkRuntimeException("Failed to deserialize the splits.", e);
+			}
 		} else if (event instanceof SourceEventWrapper) {
 			sourceReader.handleSourceEvents(((SourceEventWrapper) event).getSourceEvent());
 		} else {

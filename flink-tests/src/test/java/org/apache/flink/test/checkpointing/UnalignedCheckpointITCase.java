@@ -44,7 +44,6 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.apache.flink.util.TestLogger;
 
 import org.apache.commons.lang3.ArrayUtils;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ErrorCollector;
@@ -102,7 +101,6 @@ import static org.hamcrest.Matchers.greaterThan;
  *     <li>The number of successful checkpoints is indeed {@code >=n}.</li>
  * </ul>
  */
-@Ignore
 public class UnalignedCheckpointITCase extends TestLogger {
 	public static final String NUM_INPUTS = "inputs";
 	public static final String NUM_OUTPUTS = "outputs";
@@ -184,7 +182,7 @@ public class UnalignedCheckpointITCase extends TestLogger {
 		env.enableCheckpointing(100);
 		// keep in sync with FailingMapper in #createDAG
 		env.setRestartStrategy(RestartStrategies.fixedDelayRestart(5, Time.milliseconds(100)));
-		env.getCheckpointConfig().enableUnalignedCheckpoints();
+		env.getCheckpointConfig().enableUnalignedCheckpoints(true);
 		return env;
 	}
 

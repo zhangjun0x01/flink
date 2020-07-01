@@ -25,7 +25,7 @@ import org.apache.flink.streaming.connectors.elasticsearch6.ElasticsearchSink;
 import org.apache.flink.streaming.connectors.elasticsearch6.RestClientFactory;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.format.SinkFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkFunctionProvider;
 import org.apache.flink.table.data.RowData;
@@ -50,14 +50,14 @@ import java.util.Objects;
 @PublicEvolving
 final class Elasticsearch6DynamicSink implements DynamicTableSink {
 	@VisibleForTesting
-	static final Elasticsearch7RequestFactory REQUEST_FACTORY = new Elasticsearch7RequestFactory();
+	static final Elasticsearch6RequestFactory REQUEST_FACTORY = new Elasticsearch6RequestFactory();
 
-	private final SinkFormat<SerializationSchema<RowData>> format;
+	private final EncodingFormat<SerializationSchema<RowData>> format;
 	private final TableSchema schema;
 	private final Elasticsearch6Configuration config;
 
 	public Elasticsearch6DynamicSink(
-			SinkFormat<SerializationSchema<RowData>> format,
+			EncodingFormat<SerializationSchema<RowData>> format,
 			Elasticsearch6Configuration config,
 			TableSchema schema) {
 		this(format, config, schema, (ElasticsearchSink.Builder::new));
@@ -83,7 +83,7 @@ final class Elasticsearch6DynamicSink implements DynamicTableSink {
 	}
 
 	Elasticsearch6DynamicSink(
-			SinkFormat<SerializationSchema<RowData>> format,
+			EncodingFormat<SerializationSchema<RowData>> format,
 			Elasticsearch6Configuration config,
 			TableSchema schema,
 			ElasticSearchBuilderProvider builderProvider) {
@@ -111,7 +111,7 @@ final class Elasticsearch6DynamicSink implements DynamicTableSink {
 	@Override
 	public SinkFunctionProvider getSinkRuntimeProvider(Context context) {
 		return () -> {
-			SerializationSchema<RowData> format = this.format.createSinkFormat(context, schema.toRowDataType());
+			SerializationSchema<RowData> format = this.format.createRuntimeEncoder(context, schema.toRowDataType());
 
 			final RowElasticsearchSinkFunction upsertFunction =
 				new RowElasticsearchSinkFunction(
@@ -128,16 +128,17 @@ final class Elasticsearch6DynamicSink implements DynamicTableSink {
 				upsertFunction);
 
 			builder.setFailureHandler(config.getFailureHandler());
-			config.getBulkFlushMaxActions().ifPresent(builder::setBulkFlushMaxActions);
-			config.getBulkFlushMaxSize().ifPresent(builder::setBulkFlushMaxSizeMb);
-			config.getBulkFlushInterval().ifPresent(builder::setBulkFlushInterval);
+			builder.setBulkFlushMaxActions(config.getBulkFlushMaxActions());
+			builder.setBulkFlushMaxSizeMb((int) (config.getBulkFlushMaxByteSize() >> 20));
+			builder.setBulkFlushInterval(config.getBulkFlushInterval());
 			builder.setBulkFlushBackoff(config.isBulkFlushBackoffEnabled());
 			config.getBulkFlushBackoffType().ifPresent(builder::setBulkFlushBackoffType);
 			config.getBulkFlushBackoffRetries().ifPresent(builder::setBulkFlushBackoffRetries);
 			config.getBulkFlushBackoffDelay().ifPresent(builder::setBulkFlushBackoffDelay);
 
-			config.getPathPrefix()
-				.ifPresent(pathPrefix -> builder.setRestClientFactory(new DefaultRestClientFactory(pathPrefix)));
+			// we must overwrite the default factory which is defined with a lambda because of a bug
+			// in shading lambda serialization shading see FLINK-18006
+			builder.setRestClientFactory(new DefaultRestClientFactory(config.getPathPrefix().orElse(null)));
 
 			final ElasticsearchSink<RowData> sink = builder.build();
 
@@ -156,7 +157,7 @@ final class Elasticsearch6DynamicSink implements DynamicTableSink {
 
 	@Override
 	public String asSummaryString() {
-		return "Elasticsearch7";
+		return "Elasticsearch6";
 	}
 
 	/**
@@ -199,7 +200,7 @@ final class Elasticsearch6DynamicSink implements DynamicTableSink {
 	/**
 	 * Version-specific creation of {@link org.elasticsearch.action.ActionRequest}s used by the sink.
 	 */
-	private static class Elasticsearch7RequestFactory implements RequestFactory {
+	private static class Elasticsearch6RequestFactory implements RequestFactory {
 		@Override
 		public UpdateRequest createUpdateRequest(
 			String index,

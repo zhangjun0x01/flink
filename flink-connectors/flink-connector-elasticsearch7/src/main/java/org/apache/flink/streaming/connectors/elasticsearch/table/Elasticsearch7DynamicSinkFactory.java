@@ -24,7 +24,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.connector.format.SinkFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
@@ -83,7 +83,7 @@ public class Elasticsearch7DynamicSinkFactory implements DynamicTableSinkFactory
 
 		final FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
 
-		final SinkFormat<SerializationSchema<RowData>> format = helper.discoverSinkFormat(
+		final EncodingFormat<SerializationSchema<RowData>> format = helper.discoverEncodingFormat(
 			SerializationFormatFactory.class,
 			FORMAT_OPTION);
 
@@ -94,7 +94,7 @@ public class Elasticsearch7DynamicSinkFactory implements DynamicTableSinkFactory
 			.forEach(configuration::setString);
 		Elasticsearch7Configuration config = new Elasticsearch7Configuration(configuration, context.getClassLoader());
 
-		validateOptions(config, configuration);
+		validate(config, configuration);
 
 		return new Elasticsearch7DynamicSink(
 			format,
@@ -102,27 +102,30 @@ public class Elasticsearch7DynamicSinkFactory implements DynamicTableSinkFactory
 			TableSchemaUtils.getPhysicalSchema(tableSchema));
 	}
 
-	private void validateOptions(Elasticsearch7Configuration config, Configuration originalConfiguration) {
+	private void validate(Elasticsearch7Configuration config, Configuration originalConfiguration) {
 		config.getFailureHandler(); // checks if we can instantiate the custom failure handler
 		config.getHosts(); // validate hosts
-		validateOptions(
+		validate(
 			config.getIndex().length() >= 1,
 			() -> String.format("'%s' must not be empty", INDEX_OPTION.key()));
-		validateOptions(
-			config.getBulkFlushMaxActions().map(maxActions -> maxActions >= 1).orElse(true),
+		int maxActions = config.getBulkFlushMaxActions();
+		validate(
+			maxActions == -1 || maxActions >= 1,
 			() -> String.format(
 				"'%s' must be at least 1 character. Got: %s",
 				BULK_FLUSH_MAX_ACTIONS_OPTION.key(),
-				config.getBulkFlushMaxActions().get())
+				maxActions)
 		);
-		validateOptions(
-			config.getBulkFlushMaxSize().map(maxSize -> maxSize >= 1024 * 1024).orElse(true),
+		long maxSize = config.getBulkFlushMaxByteSize();
+		long mb1 = 1024 * 1024;
+		validate(
+			maxSize == -1 || (maxSize >= mb1 && maxSize % mb1 == 0),
 			() -> String.format(
-				"'%s' must be at least 1mb character. Got: %s",
+				"'%s' must be in MB granularity. Got: %s",
 				BULK_FLASH_MAX_SIZE_OPTION.key(),
 				originalConfiguration.get(BULK_FLASH_MAX_SIZE_OPTION).toHumanReadableString())
 		);
-		validateOptions(
+		validate(
 			config.getBulkFlushBackoffRetries().map(retries -> retries >= 1).orElse(true),
 			() -> String.format(
 				"'%s' must be at least 1. Got: %s",
@@ -131,7 +134,7 @@ public class Elasticsearch7DynamicSinkFactory implements DynamicTableSinkFactory
 		);
 	}
 
-	private static void validateOptions(boolean condition, Supplier<String> message) {
+	private static void validate(boolean condition, Supplier<String> message) {
 		if (!condition) {
 			throw new ValidationException(message.get());
 		}

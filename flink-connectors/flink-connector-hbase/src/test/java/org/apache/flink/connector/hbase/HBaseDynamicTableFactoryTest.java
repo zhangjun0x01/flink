@@ -24,7 +24,7 @@ import org.apache.flink.connector.hbase.options.HBaseOptions;
 import org.apache.flink.connector.hbase.options.HBaseWriteOptions;
 import org.apache.flink.connector.hbase.sink.HBaseDynamicTableSink;
 import org.apache.flink.connector.hbase.source.HBaseDynamicTableSource;
-import org.apache.flink.connector.hbase.source.HBaseLookupFunction;
+import org.apache.flink.connector.hbase.source.HBaseRowDataLookupFunction;
 import org.apache.flink.connector.hbase.util.HBaseTableSchema;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogTableImpl;
@@ -111,8 +111,8 @@ public class HBaseDynamicTableFactoryTest {
 		assertTrue(lookupProvider instanceof TableFunctionProvider);
 
 		TableFunction tableFunction = ((TableFunctionProvider) lookupProvider).createTableFunction();
-		assertTrue(tableFunction instanceof HBaseLookupFunction);
-		assertEquals("testHBastTable", ((HBaseLookupFunction) tableFunction).getHTableName());
+		assertTrue(tableFunction instanceof HBaseRowDataLookupFunction);
+		assertEquals("testHBastTable", ((HBaseRowDataLookupFunction) tableFunction).getHTableName());
 
 		HBaseTableSchema hbaseSchema = hbaseSource.getHBaseTableSchema();
 		assertEquals(2, hbaseSchema.getRowKeyIndex());
@@ -182,11 +182,53 @@ public class HBaseDynamicTableFactoryTest {
 
 		HBaseWriteOptions expectedWriteOptions = HBaseWriteOptions.builder()
 			.setBufferFlushMaxRows(1000)
-			.setBufferFlushIntervalMillis(10 * 1000)
-			.setBufferFlushMaxSizeInBytes(10 * 1024 * 1024)
+			.setBufferFlushIntervalMillis(1000)
+			.setBufferFlushMaxSizeInBytes(2 * 1024 * 1024)
 			.build();
 		HBaseWriteOptions actualWriteOptions = hbaseSink.getWriteOptions();
 		assertEquals(expectedWriteOptions, actualWriteOptions);
+	}
+
+	@Test
+	public void testBufferFlushOptions() {
+		Map<String, String> options = getAllOptions();
+		options.put("sink.buffer-flush.max-size", "10mb");
+		options.put("sink.buffer-flush.max-rows", "100");
+		options.put("sink.buffer-flush.interval", "10s");
+
+		TableSchema schema = TableSchema.builder()
+			.field(ROWKEY, STRING())
+			.build();
+
+		DynamicTableSink sink = createTableSink(schema, options);
+		HBaseWriteOptions expected = HBaseWriteOptions.builder()
+			.setBufferFlushMaxRows(100)
+			.setBufferFlushIntervalMillis(10 * 1000)
+			.setBufferFlushMaxSizeInBytes(10 * 1024 * 1024)
+			.build();
+		HBaseWriteOptions actual = ((HBaseDynamicTableSink) sink).getWriteOptions();
+		assertEquals(expected, actual);
+	}
+
+	@Test
+	public void testDisabledBufferFlushOptions() {
+		Map<String, String> options = getAllOptions();
+		options.put("sink.buffer-flush.max-size", "0");
+		options.put("sink.buffer-flush.max-rows", "0");
+		options.put("sink.buffer-flush.interval", "0");
+
+		TableSchema schema = TableSchema.builder()
+			.field(ROWKEY, STRING())
+			.build();
+
+		DynamicTableSink sink = createTableSink(schema, options);
+		HBaseWriteOptions expected = HBaseWriteOptions.builder()
+			.setBufferFlushMaxRows(0)
+			.setBufferFlushIntervalMillis(0)
+			.setBufferFlushMaxSizeInBytes(0)
+			.build();
+		HBaseWriteOptions actual = ((HBaseDynamicTableSink) sink).getWriteOptions();
+		assertEquals(expected, actual);
 	}
 
 	@Test
@@ -219,15 +261,70 @@ public class HBaseDynamicTableFactoryTest {
 		}
 	}
 
+	@Test
+	public void testTypeWithUnsupportedPrecision() {
+		Map<String, String> options = getAllOptions();
+		// test unsupported timestamp precision
+		TableSchema schema = TableSchema.builder()
+			.field(ROWKEY, STRING())
+			.field(FAMILY1, ROW(
+				FIELD(COL1, TIMESTAMP(6)),
+				FIELD(COL2, INT())))
+			.build();
+		try {
+			createTableSource(schema, options);
+			fail("Should fail");
+		} catch (Exception e) {
+			assertTrue(ExceptionUtils
+				.findThrowableWithMessage(e, "The precision 6 of TIMESTAMP type is out of the range [0, 3]" +
+					" supported by HBase connector")
+				.isPresent());
+		}
+
+		try {
+			createTableSink(schema, options);
+			fail("Should fail");
+		} catch (Exception e) {
+			assertTrue(ExceptionUtils
+				.findThrowableWithMessage(e, "The precision 6 of TIMESTAMP type is out of the range [0, 3]" +
+					" supported by HBase connector")
+				.isPresent());
+		}
+		// test unsupported time precision
+		schema = TableSchema.builder()
+			.field(ROWKEY, STRING())
+			.field(FAMILY1, ROW(
+				FIELD(COL1, TIME(6)),
+				FIELD(COL2, INT())))
+			.build();
+
+		try {
+			createTableSource(schema, options);
+			fail("Should fail");
+		} catch (Exception e) {
+			assertTrue(ExceptionUtils
+				.findThrowableWithMessage(e, "The precision 6 of TIME type is out of the range [0, 3]" +
+					" supported by HBase connector")
+				.isPresent());
+		}
+
+		try {
+			createTableSink(schema, options);
+			fail("Should fail");
+		} catch (Exception e) {
+			assertTrue(ExceptionUtils
+				.findThrowableWithMessage(e, "The precision 6 of TIME type is out of the range [0, 3]" +
+					" supported by HBase connector")
+				.isPresent());
+		}
+	}
+
 	private Map<String, String> getAllOptions() {
 		Map<String, String> options = new HashMap<>();
 		options.put("connector", "hbase-1.4");
 		options.put("table-name", "testHBastTable");
 		options.put("zookeeper.quorum", "localhost:2181");
-		options.put("zookeeper.znode-parent", "/flink");
-		options.put("sink.buffer-flush.max-size", "10mb");
-		options.put("sink.buffer-flush.max-rows", "1000");
-		options.put("sink.buffer-flush.interval", "10s");
+		options.put("zookeeper.znode.parent", "/flink");
 		return options;
 	}
 

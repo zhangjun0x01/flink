@@ -25,10 +25,10 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.format.ScanFormat;
-import org.apache.flink.table.connector.format.SinkFormat;
+import org.apache.flink.table.connector.format.DecodingFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DeserializationFormatFactory;
 import org.apache.flink.table.factories.DynamicTableFactory;
@@ -43,6 +43,8 @@ import java.util.Set;
 
 import static org.apache.flink.formats.json.JsonOptions.FAIL_ON_MISSING_FIELD;
 import static org.apache.flink.formats.json.JsonOptions.IGNORE_PARSE_ERRORS;
+import static org.apache.flink.formats.json.JsonOptions.TIMESTAMP_FORMAT;
+import static org.apache.flink.formats.json.JsonOptions.TIMESTAMP_FORMAT_ENUM;
 
 /**
  * Table format factory for providing configured instances of JSON to RowData
@@ -56,7 +58,7 @@ public class JsonFormatFactory implements
 
 	@SuppressWarnings("unchecked")
 	@Override
-	public ScanFormat<DeserializationSchema<RowData>> createScanFormat(
+	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		FactoryUtil.validateFactoryOptions(this, formatOptions);
@@ -64,20 +66,23 @@ public class JsonFormatFactory implements
 
 		final boolean failOnMissingField = formatOptions.get(FAIL_ON_MISSING_FIELD);
 		final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+		TimestampFormat timestampOption = JsonOptions.getTimestampFormat(formatOptions);
 
-		return new ScanFormat<DeserializationSchema<RowData>>() {
+		return new DecodingFormat<DeserializationSchema<RowData>>() {
 			@Override
-			public DeserializationSchema<RowData> createScanFormat(
-					ScanTableSource.Context scanContext,
+			public DeserializationSchema<RowData> createRuntimeDecoder(
+					DynamicTableSource.Context context,
 					DataType producedDataType) {
 				final RowType rowType = (RowType) producedDataType.getLogicalType();
 				final TypeInformation<RowData> rowDataTypeInfo =
-						(TypeInformation<RowData>) scanContext.createTypeInformation(producedDataType);
+						(TypeInformation<RowData>) context.createTypeInformation(producedDataType);
 				return new JsonRowDataDeserializationSchema(
 						rowType,
 						rowDataTypeInfo,
 						failOnMissingField,
-						ignoreParseErrors);
+						ignoreParseErrors,
+						timestampOption
+					);
 			}
 
 			@Override
@@ -88,18 +93,20 @@ public class JsonFormatFactory implements
 	}
 
 	@Override
-	public SinkFormat<SerializationSchema<RowData>> createSinkFormat(
+	public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		FactoryUtil.validateFactoryOptions(this, formatOptions);
 
-		return new SinkFormat<SerializationSchema<RowData>>() {
+		TimestampFormat timestampOption = JsonOptions.getTimestampFormat(formatOptions);
+
+		return new EncodingFormat<SerializationSchema<RowData>>() {
 			@Override
-			public SerializationSchema<RowData> createSinkFormat(
+			public SerializationSchema<RowData> createRuntimeEncoder(
 					DynamicTableSink.Context context,
 					DataType consumedDataType) {
 				final RowType rowType = (RowType) consumedDataType.getLogicalType();
-				return new JsonRowDataSerializationSchema(rowType);
+				return new JsonRowDataSerializationSchema(rowType, timestampOption);
 			}
 
 			@Override
@@ -124,6 +131,7 @@ public class JsonFormatFactory implements
 		Set<ConfigOption<?>> options = new HashSet<>();
 		options.add(FAIL_ON_MISSING_FIELD);
 		options.add(IGNORE_PARSE_ERRORS);
+		options.add(TIMESTAMP_FORMAT);
 		return options;
 	}
 
@@ -134,11 +142,16 @@ public class JsonFormatFactory implements
 	static void validateFormatOptions(ReadableConfig tableOptions) {
 		boolean failOnMissingField = tableOptions.get(FAIL_ON_MISSING_FIELD);
 		boolean ignoreParseErrors = tableOptions.get(IGNORE_PARSE_ERRORS);
+		String timestampFormat = tableOptions.get(TIMESTAMP_FORMAT);
 		if (ignoreParseErrors && failOnMissingField) {
 			throw new ValidationException(FAIL_ON_MISSING_FIELD.key()
 					+ " and "
 					+ IGNORE_PARSE_ERRORS.key()
 					+ " shouldn't both be true.");
+		}
+		if (!TIMESTAMP_FORMAT_ENUM.contains(timestampFormat)){
+			throw new ValidationException(String.format("Unsupported value '%s' for %s. Supported values are [SQL, ISO-8601].",
+				timestampFormat, TIMESTAMP_FORMAT.key()));
 		}
 	}
 }

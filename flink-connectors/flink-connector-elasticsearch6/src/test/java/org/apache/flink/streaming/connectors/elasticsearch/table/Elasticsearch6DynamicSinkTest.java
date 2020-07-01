@@ -24,11 +24,12 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.connectors.elasticsearch.ActionRequestFailureHandler;
 import org.apache.flink.streaming.connectors.elasticsearch.ElasticsearchSinkBase;
 import org.apache.flink.streaming.connectors.elasticsearch.RequestIndexer;
+import org.apache.flink.streaming.connectors.elasticsearch.util.NoOpFailureHandler;
 import org.apache.flink.streaming.connectors.elasticsearch6.ElasticsearchSink;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.format.SinkFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
@@ -41,6 +42,7 @@ import org.mockito.Mockito;
 import java.util.List;
 
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -65,7 +67,7 @@ public class Elasticsearch6DynamicSinkTest {
 
 		BuilderProvider provider = new BuilderProvider();
 		final Elasticsearch6DynamicSink testSink = new Elasticsearch6DynamicSink(
-			new DummySinkFormat(),
+			new DummyEncodingFormat(),
 			new Elasticsearch6Configuration(getConfig(), this.getClass().getClassLoader()),
 			schema,
 			provider
@@ -83,6 +85,33 @@ public class Elasticsearch6DynamicSinkTest {
 		verify(provider.builderSpy).setBulkFlushMaxSizeMb(1);
 		verify(provider.builderSpy).setRestClientFactory(new Elasticsearch6DynamicSink.DefaultRestClientFactory("/myapp"));
 		verify(provider.sinkSpy).disableFlushOnCheckpoint();
+	}
+
+	@Test
+	public void testDefaultConfig() {
+		final TableSchema schema = createTestSchema();
+		Configuration configuration = new Configuration();
+		configuration.setString(ElasticsearchOptions.INDEX_OPTION.key(), INDEX);
+		configuration.setString(ElasticsearchOptions.DOCUMENT_TYPE_OPTION.key(), DOC_TYPE);
+		configuration.setString(ElasticsearchOptions.HOSTS_OPTION.key(), SCHEMA + "://" + HOSTNAME + ":" + PORT);
+
+		BuilderProvider provider = new BuilderProvider();
+		final Elasticsearch6DynamicSink testSink = new Elasticsearch6DynamicSink(
+			new DummyEncodingFormat(),
+			new Elasticsearch6Configuration(configuration, this.getClass().getClassLoader()),
+			schema,
+			provider
+		);
+
+		testSink.getSinkRuntimeProvider(new MockSinkContext()).createSinkFunction();
+
+		verify(provider.builderSpy).setFailureHandler(new NoOpFailureHandler());
+		verify(provider.builderSpy).setBulkFlushBackoff(false);
+		verify(provider.builderSpy).setBulkFlushInterval(1000);
+		verify(provider.builderSpy).setBulkFlushMaxActions(1000);
+		verify(provider.builderSpy).setBulkFlushMaxSizeMb(2);
+		verify(provider.builderSpy).setRestClientFactory(new Elasticsearch6DynamicSink.DefaultRestClientFactory(null));
+		verify(provider.sinkSpy, never()).disableFlushOnCheckpoint();
 	}
 
 	private Configuration getConfig() {
@@ -141,9 +170,9 @@ public class Elasticsearch6DynamicSinkTest {
 		}
 	}
 
-	private static class DummySinkFormat implements SinkFormat<SerializationSchema<RowData>> {
+	private static class DummyEncodingFormat implements EncodingFormat<SerializationSchema<RowData>> {
 		@Override
-		public SerializationSchema<RowData> createSinkFormat(
+		public SerializationSchema<RowData> createRuntimeEncoder(
 				DynamicTableSink.Context context,
 				DataType consumedDataType) {
 			return DummySerializationSchema.INSTANCE;

@@ -38,7 +38,6 @@ import static org.apache.flink.runtime.state.ChannelPersistenceITCase.getStreamF
 import static org.apache.flink.util.CloseableIterator.ofElements;
 import static org.apache.flink.util.ExceptionUtils.findThrowable;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -69,9 +68,7 @@ public class ChannelStateWriterImplTest {
 		ChannelStateWriteResult result;
 		try (ChannelStateWriterImpl writer = openWriter()) {
 			callStart(writer);
-			result = writer.getWriteResult(CHECKPOINT_ID);
-			ChannelStateWriteResult result2 = writer.getWriteResult(CHECKPOINT_ID);
-			assertSame(result, result2);
+			result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
 			assertFalse(result.resultSubpartitionStateHandles.isDone());
 			assertFalse(result.inputChannelStateHandles.isDone());
 		}
@@ -79,22 +76,12 @@ public class ChannelStateWriterImplTest {
 		assertTrue(result.resultSubpartitionStateHandles.isDone());
 	}
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testResultCleanup() throws IOException {
-		try (ChannelStateWriterImpl writer = openWriter()) {
-			callStart(writer);
-			writer.getWriteResult(CHECKPOINT_ID);
-			writer.stop(CHECKPOINT_ID);
-			writer.getWriteResult(CHECKPOINT_ID);
-		}
-	}
-
 	@Test
 	public void testAbort() throws Exception {
 		NetworkBuffer buffer = getBuffer();
 		runWithSyncWorker((writer, worker) -> {
 			callStart(writer);
-			ChannelStateWriteResult result = writer.getWriteResult(CHECKPOINT_ID);
+			ChannelStateWriteResult result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
 			callAddInputData(writer, buffer);
 			callAbort(writer);
 			worker.processAllRequests();
@@ -108,9 +95,18 @@ public class ChannelStateWriterImplTest {
 		NetworkBuffer buffer = getBuffer();
 		runWithSyncWorker((writer, worker) -> {
 			callStart(writer);
+			writer.abort(CHECKPOINT_ID, new TestException(), true);
+			writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+		});
+	}
+
+	@Test
+	public void testAbortDoesNotClearsResults() throws Exception {
+		runWithSyncWorker((writer, worker) -> {
+			callStart(writer);
 			callAbort(writer);
 			worker.processAllRequests();
-			writer.getWriteResult(CHECKPOINT_ID);
+			writer.getAndRemoveWriteResult(CHECKPOINT_ID);
 		});
 	}
 
@@ -190,19 +186,16 @@ public class ChannelStateWriterImplTest {
 		unwrappingError(TestException.class, () -> callStart(writer));
 	}
 
-	@Test
-	public void testStartAbortsOldCheckpoints() throws Exception {
-		int maxCheckpoints = 10;
-		runWithSyncWorker((writer, worker) -> {
-			writer.start(0, CheckpointOptions.forCheckpointWithDefaultLocation());
-			ChannelStateWriteResult writeResult = writer.getWriteResult(0);
-			for (int i = 1; i <= maxCheckpoints; i++) {
+	@Test(expected = IllegalStateException.class)
+	public void testLimit() throws IOException {
+		int maxCheckpoints = 3;
+		try (ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, getStreamFactoryFactory(), maxCheckpoints)) {
+			writer.open();
+			for (int i = 0; i < maxCheckpoints; i++) {
 				writer.start(i, CheckpointOptions.forCheckpointWithDefaultLocation());
-				worker.processAllRequests();
-				assertTrue(writeResult.isDone());
-				writeResult = writer.getWriteResult(i);
 			}
-		});
+			writer.start(maxCheckpoints, CheckpointOptions.forCheckpointWithDefaultLocation());
+		}
 	}
 
 	@Test(expected = IllegalStateException.class)
@@ -297,7 +290,7 @@ public class ChannelStateWriterImplTest {
 	}
 
 	private void callAbort(ChannelStateWriter writer) {
-		writer.abort(CHECKPOINT_ID, new TestException());
+		writer.abort(CHECKPOINT_ID, new TestException(), false);
 	}
 
 	private void callFinish(ChannelStateWriter writer) {

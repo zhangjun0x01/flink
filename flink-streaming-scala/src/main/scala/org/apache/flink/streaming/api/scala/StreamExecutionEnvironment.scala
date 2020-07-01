@@ -19,7 +19,8 @@
 package org.apache.flink.streaming.api.scala
 
 import com.esotericsoftware.kryo.Serializer
-import org.apache.flink.annotation.{Internal, Public, PublicEvolving}
+import org.apache.flink.annotation.{Experimental, Internal, Public, PublicEvolving}
+import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.io.{FileInputFormat, FilePathFilter, InputFormat}
 import org.apache.flink.api.common.restartstrategy.RestartStrategies.RestartStrategyConfiguration
 import org.apache.flink.api.common.typeinfo.TypeInformation
@@ -664,10 +665,14 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   /**
     * Create a DataStream using a [[Source]].
     */
-  def continuousSource[T: TypeInformation](
+  @Experimental
+  def fromSource[T: TypeInformation](
       source: Source[T, _ <: SourceSplit, _],
-      sourceName: String): Unit = {
-    asScalaStream(javaEnv.continuousSource(source, sourceName))
+      watermarkStrategy: WatermarkStrategy[T],
+      sourceName: String): DataStream[T] = {
+
+    val typeInfo = implicitly[TypeInformation[T]]
+    asScalaStream(javaEnv.fromSource(source, watermarkStrategy, sourceName, typeInfo))
   }
 
   /**
