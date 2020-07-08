@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.MemorySize;
 
 import java.time.Duration;
+import java.time.ZoneId;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 
@@ -130,6 +131,12 @@ public class FileSystemOptions {
 							" If timestamp in partition is year, month, day, hour," +
 							" can configure: '$year-$month-$day $hour:00:00'." +
 							" If timestamp in partition is dt and hour, can configure: '$dt $hour:00:00'.");
+
+	public static final ConfigOption<String> PARTITION_TIME_EXTRACTOR_TIME_ZONE =
+		key("partition.time-extractor.time-zone")
+			.stringType()
+			.defaultValue(ZoneId.systemDefault().toString())
+			.withDescription("The time zone of the 'partition.time-extractor.timestamp-pattern' ");
 
 	public static final ConfigOption<Duration> LOOKUP_JOIN_CACHE_TTL =
 			key("lookup.join.cache.ttl")

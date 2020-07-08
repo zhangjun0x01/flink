@@ -31,6 +31,7 @@ import org.apache.flink.table.filesystem.PartitionTimeExtractor;
 import org.apache.flink.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -40,10 +41,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-import static org.apache.flink.table.filesystem.DefaultPartTimeExtractor.toMills;
 import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_CLASS;
 import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_KIND;
 import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
+import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_TIME_ZONE;
 import static org.apache.flink.table.filesystem.FileSystemOptions.SINK_PARTITION_COMMIT_DELAY;
 import static org.apache.flink.table.utils.PartitionPathUtils.extractPartitionValues;
 
@@ -74,6 +75,7 @@ public class PartitionTimeCommitTigger implements PartitionCommitTrigger {
 	private final PartitionTimeExtractor extractor;
 	private final long commitDelay;
 	private final List<String> partitionKeys;
+	private final String pattenTimeZone;
 
 	public PartitionTimeCommitTigger(
 			boolean isRestored,
@@ -94,7 +96,7 @@ public class PartitionTimeCommitTigger implements PartitionCommitTrigger {
 				conf.get(PARTITION_TIME_EXTRACTOR_KIND),
 				conf.get(PARTITION_TIME_EXTRACTOR_CLASS),
 				conf.get(PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN));
-
+		this.pattenTimeZone = conf.get(PARTITION_TIME_EXTRACTOR_TIME_ZONE);
 		this.watermarksState = stateStore.getListState(WATERMARKS_STATE_DESC);
 		this.watermarks = new TreeMap<>();
 		if (isRestored) {
@@ -126,7 +128,8 @@ public class PartitionTimeCommitTigger implements PartitionCommitTrigger {
 			String partition = iter.next();
 			LocalDateTime partTime = extractor.extract(
 					partitionKeys, extractPartitionValues(new Path(partition)));
-			if (watermark > toMills(partTime) + commitDelay) {
+			long t = partTime.atZone(ZoneId.of(pattenTimeZone)).toInstant().toEpochMilli();
+			if (watermark > t + commitDelay) {
 				needCommit.add(partition);
 				iter.remove();
 			}
