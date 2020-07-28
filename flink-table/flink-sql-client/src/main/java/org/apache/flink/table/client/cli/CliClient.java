@@ -28,6 +28,7 @@ import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
 import org.apache.flink.table.client.gateway.SqlExecutionException;
 
+import org.apache.commons.io.FileUtils;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -42,6 +43,7 @@ import org.jline.utils.InfoCmp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOError;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -222,6 +224,95 @@ public class CliClient {
 		} catch (IOException e) {
 			throw new SqlClientException("Unable to close terminal.", e);
 		}
+	}
+
+	/**
+	 * execute sql files .
+	 * @param filename
+	 * @return
+	 */
+	public boolean executeFile(String filename){
+		File file = new File(filename);
+		if (!file.exists()){
+			printError("the file do not exist");
+			return false;
+		} else {
+			String statement = null;
+			try {
+				statement = FileUtils.readFileToString(file);
+			} catch (IOException e){
+				printError("read the sql file error , " + e.getMessage());
+				return false;
+			}
+			String[] sqls = statement.split(";");
+			for (String sql : sqls){
+				if (sql == null || "".equals(sql.trim())){
+					continue;
+				}
+				final Optional<SqlCommandCall> parsedStatement = parseCommand(sql);
+				if (parsedStatement.isPresent()){
+					SqlCommandCall cmdCall = parsedStatement.get();
+					switch (cmdCall.command) {
+						case SET:
+							callSet(cmdCall);
+							break;
+						case USE_CATALOG:
+							callUseCatalog(cmdCall);
+							break;
+						case USE:
+							callUseDatabase(cmdCall);
+							break;
+						case INSERT_INTO:
+						case INSERT_OVERWRITE:
+							callInsert(cmdCall);
+							break;
+						case CREATE_TABLE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_TABLE_CREATED);
+							break;
+						case DROP_TABLE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_TABLE_REMOVED);
+							break;
+						case CREATE_VIEW:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_VIEW_CREATED);
+							break;
+						case DROP_VIEW:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_VIEW_REMOVED);
+							break;
+						case CREATE_FUNCTION:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_FUNCTION_CREATED);
+							break;
+						case DROP_FUNCTION:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_FUNCTION_REMOVED);
+							break;
+						case ALTER_FUNCTION:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_ALTER_FUNCTION_SUCCEEDED, CliStrings.MESSAGE_ALTER_FUNCTION_FAILED);
+							break;
+						case CREATE_DATABASE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_DATABASE_CREATED);
+							break;
+						case DROP_DATABASE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_DATABASE_REMOVED);
+							break;
+						case ALTER_DATABASE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_ALTER_DATABASE_SUCCEEDED, CliStrings.MESSAGE_ALTER_DATABASE_FAILED);
+							break;
+						case ALTER_TABLE:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_ALTER_TABLE_SUCCEEDED, CliStrings.MESSAGE_ALTER_TABLE_FAILED);
+							break;
+						case CREATE_CATALOG:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_CATALOG_CREATED);
+							break;
+						case DROP_CATALOG:
+							callDdl(cmdCall.operands[0], CliStrings.MESSAGE_CATALOG_REMOVED);
+							break;
+						default:
+							throw new SqlClientException("Unsupported command: " + cmdCall.command);
+					}
+				}
+
+			}
+		}
+		return true;
 	}
 
 	/**

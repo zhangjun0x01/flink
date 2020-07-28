@@ -137,16 +137,19 @@ public class SqlClient {
 						SystemUtils.IS_OS_WINDOWS ? "flink-sql-history" : ".flink-sql-history");
 			}
 			cli = new CliClient(sessionId, executor, historyFilePath);
-			// interactive CLI mode
-			if (options.getUpdateStatement() == null) {
-				cli.open();
-			}
-			// execute single update statement
-			else {
+			if (options.getUpdateStatement() != null){
+				// execute  update statement
 				final boolean success = cli.submitUpdate(options.getUpdateStatement());
 				if (!success) {
 					throw new SqlClientException("Could not submit given SQL update statement to cluster.");
 				}
+			} else if (options.getFilename() != null){
+				final boolean success = cli.executeFile(options.getFilename());
+				if (!success) {
+					throw new SqlClientException("Could not submit given SQL file  to cluster.");
+				}
+			} else {
+				cli.open();
 			}
 		} finally {
 			if (cli != null) {

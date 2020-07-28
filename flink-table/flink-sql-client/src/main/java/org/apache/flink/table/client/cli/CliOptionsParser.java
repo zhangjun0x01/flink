@@ -125,6 +125,15 @@ public class CliOptionsParser {
 				"the target sink table.")
 			.build();
 
+	public static final Option OPTION_FILENAME = Option
+		.builder("f")
+		.required(false)
+		.longOpt("filename")
+		.numberOfArgs(1)
+		.argName("SQL update statement")
+		.desc("SQL from files")
+		.build();
+
 	public static final Option OPTION_HISTORY = Option
 			.builder("hist")
 			.required(false)
@@ -153,6 +162,7 @@ public class CliOptionsParser {
 		options.addOption(OPTION_LIBRARY);
 		options.addOption(OPTION_UPDATE);
 		options.addOption(OPTION_HISTORY);
+		options.addOption(OPTION_FILENAME);
 		options.addOption(PYFILES_OPTION);
 		options.addOption(PYREQUIREMENTS_OPTION);
 		options.addOption(PYARCHIVE_OPTION);
@@ -269,6 +279,7 @@ public class CliOptionsParser {
 				checkUrls(line, CliOptionsParser.OPTION_JAR),
 				checkUrls(line, CliOptionsParser.OPTION_LIBRARY),
 				line.getOptionValue(CliOptionsParser.OPTION_UPDATE.getOpt()),
+				line.getOptionValue(CliOptionsParser.OPTION_FILENAME.getOpt()),
 				line.getOptionValue(CliOptionsParser.OPTION_HISTORY.getOpt()),
 				getPythonConfiguration(line)
 			);
@@ -290,6 +301,7 @@ public class CliOptionsParser {
 				checkUrls(line, CliOptionsParser.OPTION_JAR),
 				checkUrls(line, CliOptionsParser.OPTION_LIBRARY),
 				line.getOptionValue(CliOptionsParser.OPTION_UPDATE.getOpt()),
+				line.getOptionValue(CliOptionsParser.OPTION_FILENAME.getOpt()),
 				line.getOptionValue(CliOptionsParser.OPTION_HISTORY.getOpt()),
 				getPythonConfiguration(line)
 			);
@@ -310,6 +322,7 @@ public class CliOptionsParser {
 				checkUrl(line, CliOptionsParser.OPTION_DEFAULTS),
 				checkUrls(line, CliOptionsParser.OPTION_JAR),
 				checkUrls(line, CliOptionsParser.OPTION_LIBRARY),
+				null,
 				null,
 				null,
 				getPythonConfiguration(line)

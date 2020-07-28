@@ -36,6 +36,7 @@ public class CliOptions {
 	private final List<URL> jars;
 	private final List<URL> libraryDirs;
 	private final String updateStatement;
+	private final String filename;
 	private final String historyFilePath;
 	private final Configuration pythonConfiguration;
 
@@ -47,6 +48,7 @@ public class CliOptions {
 			List<URL> jars,
 			List<URL> libraryDirs,
 			String updateStatement,
+			String filename,
 			String historyFilePath,
 			Configuration pythonConfiguration) {
 		this.isPrintHelp = isPrintHelp;
@@ -56,6 +58,7 @@ public class CliOptions {
 		this.jars = jars;
 		this.libraryDirs = libraryDirs;
 		this.updateStatement = updateStatement;
+		this.filename = filename;
 		this.historyFilePath = historyFilePath;
 		this.pythonConfiguration = pythonConfiguration;
 	}
@@ -86,6 +89,10 @@ public class CliOptions {
 
 	public String getUpdateStatement() {
 		return updateStatement;
+	}
+
+	public String getFilename(){
+		return filename;
 	}
 
 	public String getHistoryFilePath() {
