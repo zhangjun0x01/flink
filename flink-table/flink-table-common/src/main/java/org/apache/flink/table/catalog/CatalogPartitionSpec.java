@@ -32,9 +32,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public class CatalogPartitionSpec {
 
     // An unmodifiable map as <partition key, value>
-    private final Map<String, String> partitionSpec;
+    private final Map<String, Object> partitionSpec;
 
-    public CatalogPartitionSpec(Map<String, String> partitionSpec) {
+    public CatalogPartitionSpec(Map<String, Object> partitionSpec) {
         checkNotNull(partitionSpec, "partitionSpec cannot be null");
 
         this.partitionSpec = Collections.unmodifiableMap(partitionSpec);
@@ -45,7 +45,7 @@ public class CatalogPartitionSpec {
      *
      * @return a map of partition spec keys and values
      */
-    public Map<String, String> getPartitionSpec() {
+    public Map<String, Object> getPartitionSpec() {
         return partitionSpec;
     }
 
